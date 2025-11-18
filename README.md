@@ -16,8 +16,9 @@ Dette prosjektet henter all tilgjengelig data om norske bedrifter fra [Brønnøy
 ## Forutsetninger
 
 - Node.js 18+ og npm
-- AWS CLI konfigurert med passende credentials
+- AWS CLI konfigurert med passende credentials (for DynamoDB/CDK)
 - AWS CDK CLI installert (`npm install -g aws-cdk`)
+- PostgreSQL database hvis du ønsker å synkronisere lokalt (f.eks. AWS RDS)
 
 ## Installasjon
 
@@ -32,6 +33,13 @@ Opprett en `.env` fil i rotmappen:
 ```env
 AWS_REGION=eu-north-1
 DYNAMODB_TABLE_NAME=br-register-companies
+POSTGRES_HOST=database-1.cduqaum6qexq.eu-north-1.rds.amazonaws.com
+POSTGRES_PORT=5432
+POSTGRES_DB=postgres
+POSTGRES_TABLE=brreg_companies
+POSTGRES_USER=postgres
+POSTGRES_PASSWORD=super-secret
+POSTGRES_SSL=true
 ```
 
 ## Bruk
@@ -110,6 +118,20 @@ Dette scriptet:
 - Strømmer data uten å laste hele filen i minnet
 - Transformerer data for optimal lagring
 - Laster opp i batches til DynamoDB
+
+### 6. Synkroniser til PostgreSQL
+
+Hvis du vil laste de samme dataene inn i en PostgreSQL-database (f.eks. din AWS RDS-instans), sett opp miljøvariablene for `POSTGRES_*` i `.env` og kjør:
+
+```bash
+npm run sync:pg
+```
+
+Scriptet `src/sync-to-postgres.ts`:
+- Oppretter tabellen `brreg_companies` hvis den ikke finnes
+- Lagrer hele org-dataen som `JSONB` sammen med nyttige felt (`navn`, `organisasjonsform_kode`, `naeringskode1`)
+- Bruker `INSERT ... ON CONFLICT` for å oppdatere eksisterende rader
+- Logger progresjon (nyttig når du senere laster flere enn 50 enheter)
 
 ## Prosjektstruktur
 

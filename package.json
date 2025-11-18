@@ -1,0 +1,39 @@
+{
+  "name": "br-register",
+  "version": "1.0.0",
+  "description": "Norwegian business register data collection and storage system",
+  "main": "dist/index.js",
+  "scripts": {
+    "build": "tsc",
+    "start": "node dist/index.js",
+    "fetch": "ts-node --transpile-only src/fetch-companies.ts",
+    "sync": "ts-node --transpile-only src/sync-to-dynamodb.ts",
+    "deploy": "cdk deploy",
+    "synth": "cdk synth",
+    "clean": "rm -rf dist cdk.out node_modules"
+  },
+  "keywords": [
+    "brreg",
+    "norway",
+    "companies",
+    "aws"
+  ],
+  "author": "",
+  "license": "MIT",
+  "dependencies": {
+    "@aws-sdk/client-dynamodb": "^3.490.0",
+    "@aws-sdk/lib-dynamodb": "^3.490.0",
+    "axios": "^1.6.2",
+    "dotenv": "^16.3.1",
+    "stream-json": "^1.7.5"
+  },
+  "devDependencies": {
+    "@types/node": "^20.10.5",
+    "@types/stream-json": "^1.7.8",
+    "aws-cdk": "^2.120.0",
+    "aws-cdk-lib": "^2.120.0",
+    "constructs": "^10.3.0",
+    "ts-node": "^10.9.2",
+    "typescript": "^5.3.3"
+  }
+}

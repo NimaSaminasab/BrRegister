@@ -9,6 +9,7 @@
     "fetch": "ts-node --transpile-only src/fetch-companies.ts",
     "sync": "ts-node --transpile-only src/sync-to-dynamodb.ts",
     "sync:pg": "ts-node --transpile-only src/sync-to-postgres.ts",
+    "read:pg": "ts-node --transpile-only src/print-postgres-companies.ts",
     "deploy": "cdk deploy",
     "synth": "cdk synth",
     "clean": "rm -rf dist cdk.out node_modules"

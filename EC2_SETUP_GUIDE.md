@@ -163,10 +163,10 @@ npm run fetch
 
 ---
 
-## Steg 10: Kjør programmet for å synkronisere til database-1
+## Steg 10: Synkroniser selskapene til database-1
 
 ```bash
-npm start
+npm run sync:pg
 ```
 
 Programmet vil nå:
@@ -176,19 +176,44 @@ Programmet vil nå:
 
 Du vil se output som:
 ```
-Starter synkronisering av alle selskapene til database-1...
 Connecting to postgres://database-1.cduqaum6qexq.eu-north-1.rds.amazonaws.com:5432/postgres
 Synced 10/50
-Synced 20/50
 ...
 Synced 50/50
 Done.
-Synkronisering fullført!
 ```
 
 ---
 
-## Steg 11: Verifiser at dataene er lagret
+## Steg 11: Les data fra database-1 som JSON
+
+```bash
+npm start
+```
+
+Programmet leser nå hele tabellen og skriver den ut til terminalen som en JSON-array:
+
+```
+Leser alle selskaper fra database-1 og skriver dem ut som JSON...
+[
+  {
+    "organisasjonsnummer": "...",
+    "navn": "...",
+    "data": { ... }
+  }
+]
+Ferdig!
+```
+
+Hvis du heller vil kjøre TypeScript direkte:
+
+```bash
+npm run read:pg
+```
+
+---
+
+## Steg 12: Verifiser at dataene er lagret
 
 Du kan verifisere at dataene er lagret i databasen ved å koble til databasen direkte:
 
@@ -247,6 +272,9 @@ npm start
 
 # Hvis du vil kjøre sync direkte uten å bygge først
 npm run sync:pg
+
+# Les alle selskaper som JSON direkte fra TypeScript
+npm run read:pg
 
 # Se hvilke filer som er i prosjektet
 ls -la

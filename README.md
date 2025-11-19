@@ -133,6 +133,21 @@ Scriptet `src/sync-to-postgres.ts`:
 - Bruker `INSERT ... ON CONFLICT` for å oppdatere eksisterende rader
 - Logger progresjon (nyttig når du senere laster flere enn 50 enheter)
 
+### 7. Les data fra PostgreSQL og skriv ut som JSON
+
+Når dataene ligger i `database-1`, kan du lese dem ut og skrive hele datasettet til stdout:
+
+```bash
+npm start          # Kaller dist/src/index.js etter build
+# eller direkte fra TypeScript:
+npm run read:pg
+```
+
+Dette kjører `src/print-postgres-companies.ts`, som:
+- Kobler til `database-1` ved hjelp av `POSTGRES_*` verdiene dine
+- Leser alle rader i `brreg_companies` i batches
+- Skriver ut en JSON-array med hvert selskap (inkludert hele `data`-feltet) til terminalen
+
 ## Prosjektstruktur
 
 ```

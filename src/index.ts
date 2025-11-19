@@ -1,21 +1,21 @@
 /**
  * Main entry point for BR-register
- * Synkroniserer alle selskapene til PostgreSQL database-1
+ * Leser alle selskapene fra PostgreSQL database-1 og skriver dem ut som JSON
  */
 
 import dotenv from 'dotenv';
-import { syncToPostgres } from './sync-to-postgres';
+import { printCompaniesAsJson } from './print-postgres-companies';
 
 dotenv.config();
 
 async function main() {
-  console.log('Starter synkronisering av alle selskapene til database-1...');
-  await syncToPostgres();
-  console.log('Synkronisering fullført!');
+  console.log('Leser alle selskaper fra database-1 og skriver dem ut som JSON...');
+  await printCompaniesAsJson();
+  console.log('Ferdig!');
 }
 
 main().catch((error) => {
-  console.error('Feil ved synkronisering:', error);
+  console.error('Feil ved uthenting av data:', error);
   process.exit(1);
 });
 

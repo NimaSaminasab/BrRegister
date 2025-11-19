@@ -1,27 +1,11 @@
 import fs from 'fs';
 import path from 'path';
-import dotenv from 'dotenv';
-import { Client } from 'pg';
 
 import { Enhet } from './types';
+import { createPostgresClient, getPostgresEnvConfig, sanitizeIdentifier } from './postgres';
 
-dotenv.config();
-
-const {
-  POSTGRES_HOST = 'localhost',
-  POSTGRES_PORT = '5432',
-  POSTGRES_DB = 'postgres',
-  POSTGRES_USER,
-  POSTGRES_PASSWORD,
-  POSTGRES_TABLE = 'brreg_companies',
-  POSTGRES_SSL = 'false',
-} = process.env;
-
-if (!POSTGRES_USER || !POSTGRES_PASSWORD) {
-  throw new Error('POSTGRES_USER and POSTGRES_PASSWORD must be set in your environment');
-}
-
-const tableName = sanitizeIdentifier(POSTGRES_TABLE);
+const postgresConfig = getPostgresEnvConfig();
+const tableName = sanitizeIdentifier(postgresConfig.tableName);
 // When compiled, __dirname is dist/src, so we need to go up two levels to reach project root
 const companiesPath = path.join(__dirname, '..', '..', 'data', 'companies.json');
 
@@ -36,17 +20,10 @@ if (!companies.length) {
   process.exit(0);
 }
 
-const client = new Client({
-  host: POSTGRES_HOST,
-  port: Number(POSTGRES_PORT),
-  database: POSTGRES_DB,
-  user: POSTGRES_USER,
-  password: POSTGRES_PASSWORD,
-  ssl: parseSslSetting(POSTGRES_SSL),
-});
+const client = createPostgresClient(postgresConfig);
 
 async function main() {
-  console.log(`Connecting to postgres://${POSTGRES_HOST}:${POSTGRES_PORT}/${POSTGRES_DB}`);
+  console.log(`Connecting to postgres://${postgresConfig.host}:${postgresConfig.port}/${postgresConfig.database}`);
   await client.connect();
 
   await ensureTable();
@@ -104,32 +81,6 @@ async function upsertCompany(company: Enhet) {
     company.naeringskode1?.kode ?? null,
     company,
   ]);
-}
-
-function sanitizeIdentifier(identifier: string) {
-  if (!/^[a-zA-Z_][a-zA-Z0-9_]*$/.test(identifier)) {
-    throw new Error(`Invalid table name: ${identifier}. Use only letters, numbers, and underscores.`);
-  }
-  return identifier;
-}
-
-function parseSslSetting(value: string) {
-  if (!value) {
-    return false;
-  }
-  if (value.toLowerCase() === 'true') {
-    return true;
-  }
-  if (value.toLowerCase() === 'false') {
-    return false;
-  }
-
-  // Allow specifying path to CA cert or connection string JSON
-  try {
-    return JSON.parse(value);
-  } catch {
-    return value;
-  }
 }
 
 export async function syncToPostgres() {

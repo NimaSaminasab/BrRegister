@@ -185,27 +185,18 @@ Done.
 
 ---
 
-## Steg 11: Les data fra database-1 som JSON
+## Steg 11: Åpne alle selskaper i nettleseren
 
 ```bash
 npm start
 ```
 
-Programmet leser nå hele tabellen og skriver den ut til terminalen som en JSON-array:
+Dette starter Express-serveren (`src/server.ts`). Standardporten er `3000` (styres av `PORT` i `.env`).
 
-```
-Leser alle selskaper fra database-1 og skriver dem ut som JSON...
-[
-  {
-    "organisasjonsnummer": "...",
-    "navn": "...",
-    "data": { ... }
-  }
-]
-Ferdig!
-```
+- **Lokalt**: åpne `http://localhost:3000/companies`
+- **På EC2**: åpne `http://<EC2-PUBLIC-IP>:3000/companies` (Security Group må tillate port 3000/tcp)
 
-Hvis du heller vil kjøre TypeScript direkte:
+Hvis du heller vil dumpe JSON direkte i terminalen:
 
 ```bash
 npm run read:pg

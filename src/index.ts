@@ -1,21 +1,12 @@
 /**
  * Main entry point for BR-register
- * Leser alle selskapene fra PostgreSQL database-1 og skriver dem ut som JSON
+ * Starter en HTTP-server som viser alle selskapene fra PostgreSQL
  */
 
-import dotenv from 'dotenv';
-import { printCompaniesAsJson } from './print-postgres-companies';
+import { startServer } from './server';
 
-dotenv.config();
-
-async function main() {
-  console.log('Leser alle selskaper fra database-1 og skriver dem ut som JSON...');
-  await printCompaniesAsJson();
-  console.log('Ferdig!');
-}
-
-main().catch((error) => {
-  console.error('Feil ved uthenting av data:', error);
+startServer().catch((error) => {
+  console.error('Feil ved oppstart av server:', error);
   process.exit(1);
 });
 

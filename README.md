@@ -40,6 +40,7 @@ POSTGRES_TABLE=brreg_companies
 POSTGRES_USER=postgres
 POSTGRES_PASSWORD=super-secret
 POSTGRES_SSL=true
+PORT=3000            # valgfritt: port for HTTP-serveren
 ```
 
 ## Bruk
@@ -133,20 +134,28 @@ Scriptet `src/sync-to-postgres.ts`:
 - Bruker `INSERT ... ON CONFLICT` for å oppdatere eksisterende rader
 - Logger progresjon (nyttig når du senere laster flere enn 50 enheter)
 
-### 7. Les data fra PostgreSQL og skriv ut som JSON
+### 7. Vis alle selskaper i nettleseren
 
-Når dataene ligger i `database-1`, kan du lese dem ut og skrive hele datasettet til stdout:
+Start HTTP-serveren (default port `3000`, styres via `PORT`-variabelen):
 
 ```bash
-npm start          # Kaller dist/src/index.js etter build
-# eller direkte fra TypeScript:
+npm start
+```
+
+- Locally: åpne `http://localhost:3000/companies`
+- EC2: åpne `http://<EC2-PUBLIC-IP>:3000/companies` (husk å åpne porten i Security Group)
+
+Serveren (`src/server.ts`) henter alle rader fra Postgres og returnerer dem som JSON.
+
+### 8. Les data i terminalen
+
+Hvis du fortsatt vil dumpe JSON til terminalen:
+
+```bash
 npm run read:pg
 ```
 
-Dette kjører `src/print-postgres-companies.ts`, som:
-- Kobler til `database-1` ved hjelp av `POSTGRES_*` verdiene dine
-- Leser alle rader i `brreg_companies` i batches
-- Skriver ut en JSON-array med hvert selskap (inkludert hele `data`-feltet) til terminalen
+Dette kjører `src/print-postgres-companies.ts` og skriver hele datasettet til stdout.
 
 ## Prosjektstruktur
 
@@ -155,8 +164,11 @@ Dette kjører `src/print-postgres-companies.ts`, som:
 ├── src/
 │   ├── fetch-companies.ts    # Henter data fra Brønnøysundregistrene
 │   ├── sync-to-dynamodb.ts   # Synkroniserer data til DynamoDB
-│   ├── types.ts              # TypeScript typer for bedriftsdata
-│   └── index.ts              # Main entry point
+│   ├── sync-to-postgres.ts   # Synkroniserer data til PostgreSQL
+│   ├── print-postgres-companies.ts # Leser og skriver ut data fra PostgreSQL
+│   ├── server.ts             # Express-server som eksponerer /companies
+│   ├── postgres.ts           # Felles Postgres-klienthjelpere
+│   └── index.ts              # Main entry point (starter server)
 ├── infrastructure/
 │   ├── br-register-stack.ts  # AWS CDK stack definisjon
 │   └── app.ts                # CDK app entry point

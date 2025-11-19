@@ -27,10 +27,12 @@
     "@aws-sdk/lib-dynamodb": "^3.490.0",
     "axios": "^1.6.2",
     "dotenv": "^16.3.1",
+    "express": "^5.1.0",
     "pg": "^8.16.3",
     "stream-json": "^1.7.5"
   },
   "devDependencies": {
+    "@types/express": "^5.0.5",
     "@types/node": "^20.10.5",
     "@types/pg": "^8.15.6",
     "@types/stream-json": "^1.7.8",

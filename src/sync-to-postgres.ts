@@ -22,7 +22,8 @@ if (!POSTGRES_USER || !POSTGRES_PASSWORD) {
 }
 
 const tableName = sanitizeIdentifier(POSTGRES_TABLE);
-const companiesPath = path.join(__dirname, '..', 'data', 'companies.json');
+// When compiled, __dirname is dist/src, so we need to go up two levels to reach project root
+const companiesPath = path.join(__dirname, '..', '..', 'data', 'companies.json');
 
 if (!fs.existsSync(companiesPath)) {
   throw new Error(`Could not find companies file at ${companiesPath}. Run npm run fetch first.`);
@@ -131,9 +132,20 @@ function parseSslSetting(value: string) {
   }
 }
 
-main().catch(async (error) => {
-  console.error('Failed to sync to Postgres:', error);
-  await client.end().catch(() => {});
-  process.exit(1);
-});
+export async function syncToPostgres() {
+  try {
+    await main();
+  } catch (error) {
+    console.error('Failed to sync to Postgres:', error);
+    await client.end().catch(() => {});
+    throw error;
+  }
+}
+
+// Only run main if this file is executed directly (npm run sync:pg)
+if (require.main === module) {
+  syncToPostgres().catch(() => {
+    process.exit(1);
+  });
+}
 

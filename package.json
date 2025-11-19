@@ -2,10 +2,10 @@
   "name": "br-register",
   "version": "1.0.0",
   "description": "Norwegian business register data collection and storage system",
-  "main": "dist/index.js",
+  "main": "dist/src/index.js",
   "scripts": {
     "build": "tsc",
-    "start": "node dist/index.js",
+    "start": "node dist/src/index.js",
     "fetch": "ts-node --transpile-only src/fetch-companies.ts",
     "sync": "ts-node --transpile-only src/sync-to-dynamodb.ts",
     "sync:pg": "ts-node --transpile-only src/sync-to-postgres.ts",

@@ -188,7 +188,9 @@ async function fetchAnnualReports(orgnr: string): Promise<AnnualReport[]> {
       const allLinks = Array.from(document.querySelectorAll('a'));
       
       for (const link of allLinks) {
+        // @ts-ignore - link methods are available in browser context
         const href = link.getAttribute('href');
+        // @ts-ignore
         const text = link.textContent?.toLowerCase() || '';
         
         // Skip hash links
@@ -205,9 +207,11 @@ async function fetchAnnualReports(orgnr: string): Promise<AnnualReport[]> {
           let year: number | null = null;
           
           // Check parent elements for year
+          // @ts-ignore
           let parent: Element | null = link.parentElement;
           let depth = 0;
           while (parent && depth < 5) {
+            // @ts-ignore
             const parentText = parent.textContent || '';
             const yearMatch = parentText.match(/\b(20\d{2})\b/);
             if (yearMatch) {
@@ -217,6 +221,7 @@ async function fetchAnnualReports(orgnr: string): Promise<AnnualReport[]> {
                 break;
               }
             }
+            // @ts-ignore
             parent = parent.parentElement;
             depth++;
           }
@@ -226,6 +231,7 @@ async function fetchAnnualReports(orgnr: string): Promise<AnnualReport[]> {
             // @ts-ignore - Element is available in browser context
             const siblings = Array.from(link.parentElement?.children || []);
             for (const sibling of siblings) {
+              // @ts-ignore
               const siblingText = sibling.textContent || '';
               const yearMatch = siblingText.match(/\b(20\d{2})\b/);
               if (yearMatch) {
@@ -239,6 +245,7 @@ async function fetchAnnualReports(orgnr: string): Promise<AnnualReport[]> {
           }
           
           if (year) {
+            // @ts-ignore
             links.push({ year, url: href, text: link.textContent || '' });
           }
         }

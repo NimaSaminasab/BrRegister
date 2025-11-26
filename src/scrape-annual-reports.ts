@@ -354,18 +354,42 @@ function dedupeReports(reports: AnnualReport[]): AnnualReport[] {
 async function extractAnnualReportsFromDom(orgnr: string, $: CheerioAPI): Promise<AnnualReport[]> {
   console.log(`[${orgnr}] Prøver DOM-ekstraksjon...`);
   
-  const possibleSections = $('section').filter((_: number, el: Element) => {
-    const headingText = $(el).find('h2,h3').first().text().toLowerCase();
+  // Try multiple selectors - the section might be in a div, article, or other container
+  let possibleSections = $('section').filter((_: number, el: Element) => {
+    const headingText = $(el).find('h2,h3,h4').first().text().toLowerCase();
     return headingText.includes('årsregnskap') || headingText.includes('arsregnskap');
   });
 
-  console.log(`[${orgnr}] Fant ${possibleSections.length} seksjoner med "årsregnskap" i overskrift`);
+  // Also try divs with data attributes or specific classes
+  if (!possibleSections.length) {
+    possibleSections = $('div[class*="arsregnskap"], div[class*="årsregnskap"], article[class*="arsregnskap"]').filter((_: number, el: Element) => {
+      const text = $(el).text().toLowerCase();
+      return text.includes('årsregnskap') || text.includes('arsregnskap');
+    });
+  }
+
+  // Look for any element containing "Årsregnskap" heading followed by year links
+  if (!possibleSections.length) {
+    $('h2, h3, h4, h5').each((_: number, heading: Element) => {
+      const headingText = $(heading).text().toLowerCase();
+      if (headingText.includes('årsregnskap') || headingText.includes('arsregnskap')) {
+        const parent = $(heading).parent();
+        if (parent.length) {
+          possibleSections = possibleSections.add(parent);
+        }
+      }
+    });
+  }
+
+  console.log(`[${orgnr}] Fant ${possibleSections.length} elementer med "årsregnskap"`);
 
   if (!possibleSections.length) {
     // Let's also check for any text containing "Årsregnskap" or years
     const allText = $('body').text().toLowerCase();
     if (allText.includes('årsregnskap') || allText.includes('arsregnskap')) {
       console.log(`[${orgnr}] Fant "årsregnskap" tekst i body, men ingen seksjon`);
+      // Try to find years and links directly
+      return await extractFromBodyText(orgnr, $);
     }
     return [];
   }
@@ -432,6 +456,92 @@ async function extractAnnualReportsFromDom(orgnr: string, $: CheerioAPI): Promis
   }
 
   return reports;
+}
+
+async function extractFromBodyText(orgnr: string, $: CheerioAPI): Promise<AnnualReport[]> {
+  console.log(`[${orgnr}] Prøver å finne årsregnskap direkte fra body-tekst...`);
+  const reports: AnnualReport[] = [];
+  const foundYears = new Set<number>();
+  
+  // Look for year patterns followed by "Innsendt årsregnskap" links
+  $('a').each((_: number, anchor: Element) => {
+    const linkText = $(anchor).text().toLowerCase();
+    const href = $(anchor).attr('href');
+    
+    if (linkText.includes('innsendt årsregnskap') || linkText.includes('innsendt arsregnskap')) {
+      // Try to find the year near this link
+      const parent = $(anchor).closest('div, section, article, li');
+      const parentText = parent.text();
+      
+      // Look for year in the parent element
+      const yearMatch = parentText.match(/\b(20\d{2}|19\d{2})\b/);
+      if (yearMatch && href && !foundYears.has(Number(yearMatch[0]))) {
+        const year = Number(yearMatch[0]);
+        if (year >= 2000 && year <= new Date().getFullYear()) {
+          foundYears.add(year);
+          console.log(`[${orgnr}] Fant årsregnskap for ${year} via lenke: ${href}`);
+          reports.push({
+            year,
+            data: {
+              source: 'body-text-link',
+              documents: [{ title: 'Innsendt årsregnskap', url: href }],
+            },
+          });
+        }
+      }
+    }
+  });
+  
+  // Also look for year headings followed by links
+  $('h3, h4, strong, b').each((_: number, heading: Element) => {
+    const headingText = $(heading).text();
+    const yearMatch = headingText.match(YEAR_REGEX);
+    
+    if (yearMatch && !foundYears.has(Number(yearMatch[0]))) {
+      const year = Number(yearMatch[0]);
+      const nextSibling = $(heading).next();
+      const link = nextSibling.find('a').filter((_: number, a: Element) => {
+        const text = $(a).text().toLowerCase();
+        return text.includes('innsendt årsregnskap') || text.includes('innsendt arsregnskap');
+      }).first();
+      
+      if (link.length) {
+        const href = link.attr('href');
+        if (href) {
+          foundYears.add(year);
+          console.log(`[${orgnr}] Fant årsregnskap for ${year} via overskrift + lenke: ${href}`);
+          reports.push({
+            year,
+            data: {
+              source: 'heading-link',
+              documents: [{ title: 'Innsendt årsregnskap', url: href }],
+            },
+          });
+        }
+      }
+    }
+  });
+  
+  // Now fetch PDFs for all found reports
+  const reportsWithPdfs: AnnualReport[] = [];
+  for (const report of reports) {
+    try {
+      const documents = await buildDocumentsWithPdf(report.data.documents ?? [], orgnr, report.year);
+      reportsWithPdfs.push({
+        year: report.year,
+        data: {
+          ...report.data,
+          documents,
+        },
+      });
+    } catch (error) {
+      console.warn(`[${orgnr}] Klarte ikke å hente PDF for ${report.year}:`, (error as Error).message);
+      // Still add the report without PDF
+      reportsWithPdfs.push(report);
+    }
+  }
+  
+  return dedupeReports(reportsWithPdfs);
 }
 
 main().catch((error) => {

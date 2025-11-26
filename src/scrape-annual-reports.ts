@@ -164,7 +164,7 @@ async function fetchAnnualReports(orgnr: string): Promise<AnnualReport[]> {
       const [button] = await page.$x("//button[contains(translate(text(), 'Å', 'å'), 'årsregnskap')] | //a[contains(translate(text(), 'Å', 'å'), 'årsregnskap')] | //div[@role='button' and contains(translate(text(), 'Å', 'å'), 'årsregnskap')]");
       if (button) {
         await (button as puppeteer.ElementHandle<Element>).click();
-        await page.waitForTimeout(1000);
+        await new Promise((resolve) => setTimeout(resolve, 1000));
       }
     } catch (error) {
       // Button might not exist or already expanded

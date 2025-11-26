@@ -179,11 +179,13 @@ async function fetchAnnualReports(orgnr: string): Promise<AnnualReport[]> {
     await new Promise((resolve) => setTimeout(resolve, 2000));
     
     // Try to extract PDF links directly from the page using JavaScript
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const pdfLinks = await page.evaluate(() => {
       const links: Array<{ year: number; url: string; text: string }> = [];
       
-      // Find all links
-      const allLinks = Array.from(document.querySelectorAll('a')) as HTMLAnchorElement[];
+      // Find all links - document is available in browser context
+      // @ts-ignore - document is available in Puppeteer's evaluate context
+      const allLinks = Array.from(document.querySelectorAll('a'));
       
       for (const link of allLinks) {
         const href = link.getAttribute('href');
@@ -221,7 +223,8 @@ async function fetchAnnualReports(orgnr: string): Promise<AnnualReport[]> {
           
           // If no year found, check siblings
           if (!year) {
-            const siblings = Array.from(link.parentElement?.children || []) as Element[];
+            // @ts-ignore - Element is available in browser context
+            const siblings = Array.from(link.parentElement?.children || []);
             for (const sibling of siblings) {
               const siblingText = sibling.textContent || '';
               const yearMatch = siblingText.match(/\b(20\d{2})\b/);

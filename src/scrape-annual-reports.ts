@@ -19,7 +19,7 @@ interface AnnualReportDocument {
 }
 
 interface AnnualReportPayload extends Record<string, unknown> {
-  source: 'next-data' | 'dom' | 'body-text-link' | 'heading-link';
+  source: 'next-data' | 'dom' | 'body-text-link' | 'heading-link' | 'element-search' | 'regex-pattern';
   summary?: Record<string, unknown>;
   documents: AnnualReportDocument[];
   raw?: Record<string, unknown>;
@@ -135,6 +135,23 @@ async function upsertAnnualReport(
 
 async function fetchAnnualReports(orgnr: string): Promise<AnnualReport[]> {
   const url = `${BASE_URL}/${orgnr}`;
+  
+  // Try API endpoint first (if it exists)
+  const apiUrl = `https://data.brreg.no/enhetsregisteret/api/enheter/${orgnr}`;
+  try {
+    const apiResponse = await axios.get(apiUrl, {
+      headers: { 'User-Agent': USER_AGENT, 'Accept': 'application/json' },
+      timeout: 10000,
+    });
+    if (apiResponse.data && apiResponse.data.arsregnskap) {
+      console.log(`[${orgnr}] Fant årsregnskap via API`);
+      return extractFromApiData(orgnr, apiResponse.data);
+    }
+  } catch (error) {
+    // API might not have this data, continue with HTML scraping
+    console.log(`[${orgnr}] API-endepunkt ga ingen årsregnskap, prøver HTML`);
+  }
+  
   const response = await axios.get<string>(url, {
     headers: {
       'User-Agent': USER_AGENT,
@@ -144,6 +161,10 @@ async function fetchAnnualReports(orgnr: string): Promise<AnnualReport[]> {
   });
 
   const $ = load(response.data);
+  
+  // Save HTML for debugging
+  // fs.writeFileSync(`/tmp/${orgnr}.html`, response.data);
+  
   const fromNextData = await extractAnnualReportsFromNextData(orgnr, $);
 
   if (fromNextData.length) {
@@ -151,6 +172,12 @@ async function fetchAnnualReports(orgnr: string): Promise<AnnualReport[]> {
   }
 
   return await extractAnnualReportsFromDom(orgnr, $);
+}
+
+function extractFromApiData(orgnr: string, apiData: unknown): AnnualReport[] {
+  // This would parse API response if it contains annual reports
+  // For now, return empty - we'll implement if API has this data
+  return [];
 }
 
 async function extractAnnualReportsFromNextData(orgnr: string, $: CheerioAPI): Promise<AnnualReport[]> {
@@ -526,6 +553,38 @@ async function extractFromBodyText(orgnr: string, $: CheerioAPI): Promise<Annual
   });
   
   console.log(`[${orgnr}] Fant ${linksWithArsregnskap} lenker med årsregnskap-tekst`);
+  
+  // Try to find years and links by searching for year patterns near "Innsendt årsregnskap" text
+  // Look for elements that contain both a year and "Innsendt årsregnskap"
+  $('*').each((_: number, element: Element) => {
+    const elementText = $(element).text();
+    const html = $(element).html() || '';
+    
+    // Check if this element contains both a year and "innsendt årsregnskap"
+    const yearMatch = elementText.match(/\b(20\d{2})\b/);
+    if (yearMatch && (elementText.toLowerCase().includes('innsendt årsregnskap') || 
+                      elementText.toLowerCase().includes('innsendt arsregnskap'))) {
+      const year = Number(yearMatch[0]);
+      if (year >= 2000 && year <= new Date().getFullYear() && !foundYears.has(year)) {
+        // Find link in this element or its children
+        const link = $(element).find('a').first();
+        const href = link.attr('href');
+        
+        if (href) {
+          foundYears.add(year);
+          const absoluteUrl = href.startsWith('http') ? href : `https://virksomhet.brreg.no${href}`;
+          console.log(`[${orgnr}] Fant årsregnskap for ${year} via element-søk: ${absoluteUrl}`);
+          reports.push({
+            year,
+            data: {
+              source: 'element-search',
+              documents: [{ title: 'Innsendt årsregnskap', url: absoluteUrl }],
+            },
+          });
+        }
+      }
+    }
+  });
   
   // Also look for year headings followed by links
   $('h3, h4, strong, b').each((_: number, heading: Element) => {

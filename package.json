@@ -28,6 +28,7 @@
     "@aws-sdk/lib-dynamodb": "^3.490.0",
     "cheerio": "^1.0.0-rc.12",
     "pdf-parse": "^1.1.1",
+    "puppeteer": "^23.11.1",
     "axios": "^1.6.2",
     "dotenv": "^16.3.1",
     "express": "^5.1.0",

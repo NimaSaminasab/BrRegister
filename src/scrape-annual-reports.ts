@@ -3,6 +3,7 @@ import { load, CheerioAPI } from 'cheerio';
 import type { Element } from 'cheerio';
 import dotenv from 'dotenv';
 import pdf from 'pdf-parse';
+import puppeteer from 'puppeteer';
 
 import { createPostgresClient, getPostgresEnvConfig } from './postgres';
 
@@ -136,42 +137,75 @@ async function upsertAnnualReport(
 async function fetchAnnualReports(orgnr: string): Promise<AnnualReport[]> {
   const url = `${BASE_URL}/${orgnr}`;
   
-  // Try API endpoint first (if it exists)
-  const apiUrl = `https://data.brreg.no/enhetsregisteret/api/enheter/${orgnr}`;
-  try {
-    const apiResponse = await axios.get(apiUrl, {
-      headers: { 'User-Agent': USER_AGENT, 'Accept': 'application/json' },
-      timeout: 10000,
-    });
-    if (apiResponse.data && apiResponse.data.arsregnskap) {
-      console.log(`[${orgnr}] Fant årsregnskap via API`);
-      return extractFromApiData(orgnr, apiResponse.data);
-    }
-  } catch (error) {
-    // API might not have this data, continue with HTML scraping
-    console.log(`[${orgnr}] API-endepunkt ga ingen årsregnskap, prøver HTML`);
-  }
+  console.log(`[${orgnr}] Bruker Puppeteer for å laste dynamisk innhold...`);
   
-  const response = await axios.get<string>(url, {
-    headers: {
-      'User-Agent': USER_AGENT,
-      'Accept-Language': 'nb',
-    },
-    timeout: 20000,
+  // Use Puppeteer to get the fully rendered page
+  const browser = await puppeteer.launch({
+    headless: true,
+    args: ['--no-sandbox', '--disable-setuid-sandbox'],
   });
-
-  const $ = load(response.data);
   
-  // Save HTML for debugging
-  // fs.writeFileSync(`/tmp/${orgnr}.html`, response.data);
-  
-  const fromNextData = await extractAnnualReportsFromNextData(orgnr, $);
+  try {
+    const page = await browser.newPage();
+    await page.setUserAgent(USER_AGENT);
+    await page.setExtraHTTPHeaders({
+      'Accept-Language': 'nb-NO,nb;q=0.9',
+    });
+    
+    // Navigate and wait for content to load
+    await page.goto(url, { waitUntil: 'networkidle2', timeout: 30000 });
+    
+    // Wait a bit more for any lazy-loaded content
+    await page.waitForTimeout(2000);
+    
+    // Try to expand the "Årsregnskap" section if it's collapsed
+    try {
+      // Look for button/link containing "årsregnskap" text using XPath
+      const [button] = await page.$x("//button[contains(translate(text(), 'Å', 'å'), 'årsregnskap')] | //a[contains(translate(text(), 'Å', 'å'), 'årsregnskap')] | //div[@role='button' and contains(translate(text(), 'Å', 'å'), 'årsregnskap')]");
+      if (button) {
+        await (button as puppeteer.ElementHandle<Element>).click();
+        await page.waitForTimeout(1000);
+      }
+    } catch (error) {
+      // Button might not exist or already expanded
+      console.log(`[${orgnr}] Kunne ikke ekspandere årsregnskap-seksjon (kan allerede være åpen)`);
+    }
+    
+    // Get the fully rendered HTML
+    const html = await page.content();
+    await browser.close();
+    
+    const $ = load(html);
+    
+    const fromNextData = await extractAnnualReportsFromNextData(orgnr, $);
 
-  if (fromNextData.length) {
-    return fromNextData;
+    if (fromNextData.length) {
+      return fromNextData;
+    }
+
+    return await extractAnnualReportsFromDom(orgnr, $);
+  } catch (error) {
+    await browser.close();
+    console.error(`[${orgnr}] Feil med Puppeteer, prøver vanlig HTTP:`, (error as Error).message);
+    
+    // Fallback to regular HTTP request
+    const response = await axios.get<string>(url, {
+      headers: {
+        'User-Agent': USER_AGENT,
+        'Accept-Language': 'nb',
+      },
+      timeout: 20000,
+    });
+
+    const $ = load(response.data);
+    const fromNextData = await extractAnnualReportsFromNextData(orgnr, $);
+
+    if (fromNextData.length) {
+      return fromNextData;
+    }
+
+    return await extractAnnualReportsFromDom(orgnr, $);
   }
-
-  return await extractAnnualReportsFromDom(orgnr, $);
 }
 
 function extractFromApiData(orgnr: string, apiData: unknown): AnnualReport[] {

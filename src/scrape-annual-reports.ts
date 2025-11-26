@@ -19,7 +19,7 @@ interface AnnualReportDocument {
 }
 
 interface AnnualReportPayload extends Record<string, unknown> {
-  source: 'next-data' | 'dom';
+  source: 'next-data' | 'dom' | 'body-text-link' | 'heading-link';
   summary?: Record<string, unknown>;
   documents: AnnualReportDocument[];
   raw?: Record<string, unknown>;
@@ -463,34 +463,69 @@ async function extractFromBodyText(orgnr: string, $: CheerioAPI): Promise<Annual
   const reports: AnnualReport[] = [];
   const foundYears = new Set<number>();
   
-  // Look for year patterns followed by "Innsendt årsregnskap" links
+  // Debug: Count all links
+  const allLinks = $('a').length;
+  console.log(`[${orgnr}] Totalt antall lenker på siden: ${allLinks}`);
+  
+  // Look for all links that might be related to annual reports
+  let linksWithArsregnskap = 0;
   $('a').each((_: number, anchor: Element) => {
-    const linkText = $(anchor).text().toLowerCase();
-    const href = $(anchor).attr('href');
+    const linkText = $(anchor).text().toLowerCase().trim();
+    let href = $(anchor).attr('href');
     
-    if (linkText.includes('innsendt årsregnskap') || linkText.includes('innsendt arsregnskap')) {
-      // Try to find the year near this link
-      const parent = $(anchor).closest('div, section, article, li');
-      const parentText = parent.text();
+    if (!href) {
+      return;
+    }
+    
+    // Make relative URLs absolute
+    if (href.startsWith('/')) {
+      href = `https://virksomhet.brreg.no${href}`;
+    } else if (!href.startsWith('http')) {
+      href = `https://virksomhet.brreg.no/${href}`;
+    }
+    
+    // Check if link text contains "innsendt årsregnskap" or similar
+    if (linkText.includes('innsendt årsregnskap') || 
+        linkText.includes('innsendt arsregnskap') ||
+        linkText.includes('årsregnskap') ||
+        linkText.includes('arsregnskap')) {
+      linksWithArsregnskap++;
+      console.log(`[${orgnr}] Fant lenke med årsregnskap: "${linkText}" -> ${href}`);
       
-      // Look for year in the parent element
-      const yearMatch = parentText.match(/\b(20\d{2}|19\d{2})\b/);
-      if (yearMatch && href && !foundYears.has(Number(yearMatch[0]))) {
-        const year = Number(yearMatch[0]);
-        if (year >= 2000 && year <= new Date().getFullYear()) {
-          foundYears.add(year);
-          console.log(`[${orgnr}] Fant årsregnskap for ${year} via lenke: ${href}`);
-          reports.push({
-            year,
-            data: {
-              source: 'body-text-link',
-              documents: [{ title: 'Innsendt årsregnskap', url: href }],
-            },
-          });
+      // Try to find the year near this link - check parent, siblings, and nearby elements
+      const parent = $(anchor).closest('div, section, article, li, p');
+      let searchText = parent.text();
+      
+      // Also check previous siblings
+      const prevSiblings = $(anchor).prevAll('h3, h4, strong, b, div').slice(0, 3);
+      prevSiblings.each((_: number, el: Element) => {
+        searchText += ' ' + $(el).text();
+      });
+      
+      // Look for year in the search text
+      const yearMatches = searchText.match(/\b(20\d{2}|19\d{2})\b/g);
+      if (yearMatches && yearMatches.length > 0) {
+        // Take the most recent year found
+        const years = yearMatches.map((m: string) => Number(m)).filter((y: number) => y >= 2000 && y <= new Date().getFullYear());
+        if (years.length > 0) {
+          const year = Math.max(...years);
+          if (!foundYears.has(year)) {
+            foundYears.add(year);
+            console.log(`[${orgnr}] Fant årsregnskap for ${year} via lenke: ${href}`);
+            reports.push({
+              year,
+              data: {
+                source: 'body-text-link',
+                documents: [{ title: 'Innsendt årsregnskap', url: href }],
+              },
+            });
+          }
         }
       }
     }
   });
+  
+  console.log(`[${orgnr}] Fant ${linksWithArsregnskap} lenker med årsregnskap-tekst`);
   
   // Also look for year headings followed by links
   $('h3, h4, strong, b').each((_: number, heading: Element) => {
@@ -526,7 +561,13 @@ async function extractFromBodyText(orgnr: string, $: CheerioAPI): Promise<Annual
   const reportsWithPdfs: AnnualReport[] = [];
   for (const report of reports) {
     try {
-      const documents = await buildDocumentsWithPdf(report.data.documents ?? [], orgnr, report.year);
+      // Convert AnnualReportDocument[] to RawFinancialDocument[] for buildDocumentsWithPdf
+      const rawDocs: RawFinancialDocument[] = (report.data.documents ?? []).map((doc) => ({
+        title: doc.title,
+        url: doc.url,
+        type: doc.type ?? undefined,
+      }));
+      const documents = await buildDocumentsWithPdf(rawDocs, orgnr, report.year);
       reportsWithPdfs.push({
         year: report.year,
         data: {

@@ -20,7 +20,7 @@ interface AnnualReportDocument {
 }
 
 interface AnnualReportPayload extends Record<string, unknown> {
-  source: 'next-data' | 'dom' | 'body-text-link' | 'heading-link' | 'element-search' | 'regex-pattern';
+  source: 'next-data' | 'dom' | 'body-text-link' | 'heading-link' | 'element-search' | 'regex-pattern' | 'puppeteer-js';
   summary?: Record<string, unknown>;
   documents: AnnualReportDocument[];
   raw?: Record<string, unknown>;
@@ -183,7 +183,7 @@ async function fetchAnnualReports(orgnr: string): Promise<AnnualReport[]> {
       const links: Array<{ year: number; url: string; text: string }> = [];
       
       // Find all links
-      const allLinks = Array.from(document.querySelectorAll('a'));
+      const allLinks = Array.from(document.querySelectorAll('a')) as HTMLAnchorElement[];
       
       for (const link of allLinks) {
         const href = link.getAttribute('href');
@@ -221,7 +221,7 @@ async function fetchAnnualReports(orgnr: string): Promise<AnnualReport[]> {
           
           // If no year found, check siblings
           if (!year) {
-            const siblings = Array.from(link.parentElement?.children || []);
+            const siblings = Array.from(link.parentElement?.children || []) as Element[];
             for (const sibling of siblings) {
               const siblingText = sibling.textContent || '';
               const yearMatch = siblingText.match(/\b(20\d{2})\b/);

@@ -156,7 +156,7 @@ async function fetchAnnualReports(orgnr: string): Promise<AnnualReport[]> {
     await page.goto(url, { waitUntil: 'networkidle2', timeout: 30000 });
     
     // Wait a bit more for any lazy-loaded content
-    await page.waitForTimeout(2000);
+    await new Promise((resolve) => setTimeout(resolve, 2000));
     
     // Try to expand the "Årsregnskap" section if it's collapsed
     try {

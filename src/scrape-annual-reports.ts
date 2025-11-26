@@ -161,14 +161,113 @@ async function fetchAnnualReports(orgnr: string): Promise<AnnualReport[]> {
     // Try to expand the "Årsregnskap" section if it's collapsed
     try {
       // Look for button/link containing "årsregnskap" text using XPath
-      const [button] = await page.$x("//button[contains(translate(text(), 'Å', 'å'), 'årsregnskap')] | //a[contains(translate(text(), 'Å', 'å'), 'årsregnskap')] | //div[@role='button' and contains(translate(text(), 'Å', 'å'), 'årsregnskap')]");
-      if (button) {
-        await (button as puppeteer.ElementHandle<Element>).click();
-        await new Promise((resolve) => setTimeout(resolve, 1000));
+      const buttons = await page.$x("//button[contains(translate(text(), 'Å', 'å'), 'årsregnskap')] | //a[contains(translate(text(), 'Å', 'å'), 'årsregnskap')] | //div[@role='button' and contains(translate(text(), 'Å', 'å'), 'årsregnskap')]");
+      for (const button of buttons) {
+        try {
+          await button.click();
+          await new Promise((resolve) => setTimeout(resolve, 1000));
+        } catch (e) {
+          // Ignore click errors
+        }
       }
     } catch (error) {
       // Button might not exist or already expanded
       console.log(`[${orgnr}] Kunne ikke ekspandere årsregnskap-seksjon (kan allerede være åpen)`);
+    }
+    
+    // Wait for any dynamic content to load
+    await new Promise((resolve) => setTimeout(resolve, 2000));
+    
+    // Try to extract PDF links directly from the page using JavaScript
+    const pdfLinks = await page.evaluate(() => {
+      const links: Array<{ year: number; url: string; text: string }> = [];
+      
+      // Find all links
+      const allLinks = Array.from(document.querySelectorAll('a'));
+      
+      for (const link of allLinks) {
+        const href = link.getAttribute('href');
+        const text = link.textContent?.toLowerCase() || '';
+        
+        // Skip hash links
+        if (!href || href === '#' || href.startsWith('#')) {
+          continue;
+        }
+        
+        // Check if it's a PDF link or related to årsregnskap
+        if (href.includes('.pdf') || href.includes('pdf') || 
+            text.includes('årsregnskap') || text.includes('arsregnskap') ||
+            text.includes('regnskap')) {
+          
+          // Try to find year nearby
+          let year: number | null = null;
+          
+          // Check parent elements for year
+          let parent: Element | null = link.parentElement;
+          let depth = 0;
+          while (parent && depth < 5) {
+            const parentText = parent.textContent || '';
+            const yearMatch = parentText.match(/\b(20\d{2})\b/);
+            if (yearMatch) {
+              const candidateYear = parseInt(yearMatch[1], 10);
+              if (candidateYear >= 2000 && candidateYear <= new Date().getFullYear()) {
+                year = candidateYear;
+                break;
+              }
+            }
+            parent = parent.parentElement;
+            depth++;
+          }
+          
+          // If no year found, check siblings
+          if (!year) {
+            const siblings = Array.from(link.parentElement?.children || []);
+            for (const sibling of siblings) {
+              const siblingText = sibling.textContent || '';
+              const yearMatch = siblingText.match(/\b(20\d{2})\b/);
+              if (yearMatch) {
+                const candidateYear = parseInt(yearMatch[1], 10);
+                if (candidateYear >= 2000 && candidateYear <= new Date().getFullYear()) {
+                  year = candidateYear;
+                  break;
+                }
+              }
+            }
+          }
+          
+          if (year) {
+            links.push({ year, url: href, text: link.textContent || '' });
+          }
+        }
+      }
+      
+      return links;
+    });
+    
+    if (pdfLinks.length > 0) {
+      console.log(`[${orgnr}] Fant ${pdfLinks.length} PDF-lenker via JavaScript-evaluering`);
+      const reports: AnnualReport[] = [];
+      const seenYears = new Set<number>();
+      
+      for (const link of pdfLinks) {
+        if (!seenYears.has(link.year)) {
+          seenYears.add(link.year);
+          const absoluteUrl = link.url.startsWith('http') ? link.url : `https://virksomhet.brreg.no${link.url}`;
+          console.log(`[${orgnr}] Fant årsregnskap for ${link.year}: ${absoluteUrl}`);
+          reports.push({
+            year: link.year,
+            data: {
+              source: 'puppeteer-js',
+              documents: [{ title: 'Innsendt årsregnskap', url: absoluteUrl }],
+            },
+          });
+        }
+      }
+      
+      if (reports.length > 0) {
+        await browser.close();
+        return reports;
+      }
     }
     
     // Get the fully rendered HTML
@@ -545,13 +644,21 @@ async function extractFromBodyText(orgnr: string, $: CheerioAPI): Promise<Annual
       href = `https://virksomhet.brreg.no/${href}`;
     }
     
+    // Skip hash links and invalid URLs
+    if (!href || href === '#' || href.startsWith('#') || href === '') {
+      return;
+    }
+    
     // Check if link text contains "innsendt årsregnskap" or similar
     if (linkText.includes('innsendt årsregnskap') || 
-        linkText.includes('innsendt arsregnskap') ||
-        linkText.includes('årsregnskap') ||
-        linkText.includes('arsregnskap')) {
+        linkText.includes('innsendt arsregnskap')) {
       linksWithArsregnskap++;
       console.log(`[${orgnr}] Fant lenke med årsregnskap: "${linkText}" -> ${href}`);
+      
+      // Skip if it's just a hash link
+      if (href === '#' || href.startsWith('#')) {
+        return;
+      }
       
       // Try to find the year near this link - check parent, siblings, and nearby elements
       const parent = $(anchor).closest('div, section, article, li, p');
@@ -570,7 +677,7 @@ async function extractFromBodyText(orgnr: string, $: CheerioAPI): Promise<Annual
         const years = yearMatches.map((m: string) => Number(m)).filter((y: number) => y >= 2000 && y <= new Date().getFullYear());
         if (years.length > 0) {
           const year = Math.max(...years);
-          if (!foundYears.has(year)) {
+          if (!foundYears.has(year) && (href.endsWith('.pdf') || href.includes('pdf') || href.includes('regnskap'))) {
             foundYears.add(year);
             console.log(`[${orgnr}] Fant årsregnskap for ${year} via lenke: ${href}`);
             reports.push({
@@ -604,7 +711,8 @@ async function extractFromBodyText(orgnr: string, $: CheerioAPI): Promise<Annual
         const link = $(element).find('a').first();
         const href = link.attr('href');
         
-        if (href) {
+        // Only add if it's a valid URL (not just # or empty)
+        if (href && href !== '#' && !href.startsWith('#') && (href.endsWith('.pdf') || href.includes('pdf') || href.includes('regnskap'))) {
           foundYears.add(year);
           const absoluteUrl = href.startsWith('http') ? href : `https://virksomhet.brreg.no${href}`;
           console.log(`[${orgnr}] Fant årsregnskap for ${year} via element-søk: ${absoluteUrl}`);
@@ -635,7 +743,8 @@ async function extractFromBodyText(orgnr: string, $: CheerioAPI): Promise<Annual
       
       if (link.length) {
         const href = link.attr('href');
-        if (href) {
+        // Only add if it's a valid URL (not just # or empty)
+        if (href && href !== '#' && !href.startsWith('#') && (href.endsWith('.pdf') || href.includes('pdf') || href.includes('regnskap'))) {
           foundYears.add(year);
           console.log(`[${orgnr}] Fant årsregnskap for ${year} via overskrift + lenke: ${href}`);
           reports.push({

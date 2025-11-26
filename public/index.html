@@ -1,0 +1,190 @@
+<!doctype html>
+<html lang="nb">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>BR-register | Selskaper</title>
+    <style>
+      :root {
+        color-scheme: light dark;
+        font-family: system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+      }
+
+      body {
+        margin: 0;
+        padding: 2rem;
+        background: #f5f5f5;
+        color: #222;
+      }
+
+      h1 {
+        font-size: 1.75rem;
+        margin-bottom: 0.25rem;
+      }
+
+      p.subtitle {
+        margin-top: 0;
+        color: #555;
+      }
+
+      table {
+        width: 100%;
+        border-collapse: collapse;
+        margin-top: 1.5rem;
+        background: #fff;
+        border-radius: 0.5rem;
+        overflow: hidden;
+        box-shadow: 0 6px 24px rgba(15, 23, 42, 0.08);
+      }
+
+      thead {
+        background: #0f172a;
+        color: #fff;
+        text-transform: uppercase;
+        letter-spacing: 0.08em;
+        font-size: 0.8rem;
+      }
+
+      th,
+      td {
+        padding: 0.85rem 1rem;
+        text-align: left;
+      }
+
+      tbody tr:nth-child(odd) {
+        background: #f8fafc;
+      }
+
+      tbody tr:hover {
+        background: #e0f2fe;
+      }
+
+      .loading,
+      .error {
+        margin-top: 1.5rem;
+        padding: 1rem;
+        border-radius: 0.5rem;
+      }
+
+      .loading {
+        background: #e0f2fe;
+        color: #0369a1;
+      }
+
+      .error {
+        background: #fee2e2;
+        color: #b91c1c;
+      }
+
+      @media (max-width: 768px) {
+        table {
+          display: block;
+          overflow-x: auto;
+          white-space: nowrap;
+        }
+
+        body {
+          padding: 1rem;
+        }
+      }
+    </style>
+  </head>
+  <body>
+    <header>
+      <h1>Foretaksoversikt</h1>
+      <p class="subtitle">Organisasjonsnummer og navn</p>
+    </header>
+
+    <div class="loading" id="status">Henter selskaper…</div>
+
+    <table aria-label="Lista over selskaper" hidden id="companies-table">
+      <thead>
+        <tr>
+          <th scope="col">Organisasjonsnummer</th>
+          <th scope="col">Navn</th>
+        </tr>
+      </thead>
+      <tbody id="companies-body"></tbody>
+    </table>
+
+    <template id="empty-row">
+      <tr>
+        <td colspan="2" style="text-align: center; padding: 2rem">Ingen selskaper funnet.</td>
+      </tr>
+    </template>
+
+    <script>
+      const statusElement = document.getElementById('status');
+      const tableElement = document.getElementById('companies-table');
+      const tbodyElement = document.getElementById('companies-body');
+      const emptyRowTemplate = document.getElementById('empty-row');
+
+      const formatter = new Intl.DateTimeFormat('nb-NO', {
+        year: 'numeric',
+        month: 'long',
+        day: 'numeric',
+      });
+
+      function formatDate(value) {
+        if (!value) {
+          return '—';
+        }
+
+        const date = new Date(value);
+        return Number.isNaN(date.getTime()) ? value : formatter.format(date);
+      }
+
+      function renderCompanies(companies) {
+        tbodyElement.innerHTML = '';
+
+        if (companies.length === 0) {
+          tbodyElement.appendChild(emptyRowTemplate.content.cloneNode(true));
+          return;
+        }
+
+        for (const company of companies) {
+          const tr = document.createElement('tr');
+
+          const orgCell = document.createElement('td');
+          orgCell.textContent = company.organisasjonsnummer ?? '—';
+
+          const nameCell = document.createElement('td');
+          nameCell.textContent = company.navn ?? 'Ukjent navn';
+
+          tr.append(orgCell, nameCell);
+          tbodyElement.appendChild(tr);
+        }
+      }
+
+      async function loadCompanies() {
+        try {
+          const response = await fetch('/companies');
+
+          if (!response.ok) {
+            throw new Error(`Klarte ikke å hente selskaper (status ${response.status})`);
+          }
+
+          const companies = await response.json();
+
+          const sorted = companies.sort((a, b) => {
+            const nameA = (a.navn ?? '').toLocaleLowerCase('nb-NO');
+            const nameB = (b.navn ?? '').toLocaleLowerCase('nb-NO');
+            return nameA.localeCompare(nameB, 'nb-NO');
+          });
+
+          renderCompanies(sorted);
+
+          statusElement.hidden = true;
+          tableElement.hidden = false;
+        } catch (error) {
+          statusElement.className = 'error';
+          statusElement.textContent =
+            error instanceof Error ? error.message : 'Ukjent feil ved henting av selskaper';
+        }
+      }
+
+      loadCompanies();
+    </script>
+  </body>
+</html>
+

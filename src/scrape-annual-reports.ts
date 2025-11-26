@@ -157,12 +157,23 @@ async function extractAnnualReportsFromNextData(orgnr: string, $: CheerioAPI): P
   const nextDataRaw = $('#__NEXT_DATA__').first().text().trim();
 
   if (!nextDataRaw) {
+    console.log(`[${orgnr}] Ingen __NEXT_DATA__ funnet`);
     return [];
   }
 
   try {
     const nextData = JSON.parse(nextDataRaw);
+    console.log(`[${orgnr}] Parset __NEXT_DATA__, søker etter årsregnskap...`);
+    
+    // Debug: Let's check if we can find any relevant keys
+    const dataStr = JSON.stringify(nextData);
+    if (dataStr.includes('arsregnskap') || dataStr.includes('årsregnskap') || dataStr.includes('financialStatement')) {
+      console.log(`[${orgnr}] Fant potensielle årsregnskap-nøkler i __NEXT_DATA__`);
+    }
+    
     const statements = findFinancialStatementsInPayload(nextData);
+    console.log(`[${orgnr}] Fant ${statements.length} finansielle rapporter i __NEXT_DATA__`);
+    
     if (!statements.length) {
       return [];
     }
@@ -341,12 +352,21 @@ function dedupeReports(reports: AnnualReport[]): AnnualReport[] {
 }
 
 async function extractAnnualReportsFromDom(orgnr: string, $: CheerioAPI): Promise<AnnualReport[]> {
+  console.log(`[${orgnr}] Prøver DOM-ekstraksjon...`);
+  
   const possibleSections = $('section').filter((_: number, el: Element) => {
     const headingText = $(el).find('h2,h3').first().text().toLowerCase();
-    return headingText.includes('årsregnskap');
+    return headingText.includes('årsregnskap') || headingText.includes('arsregnskap');
   });
 
+  console.log(`[${orgnr}] Fant ${possibleSections.length} seksjoner med "årsregnskap" i overskrift`);
+
   if (!possibleSections.length) {
+    // Let's also check for any text containing "Årsregnskap" or years
+    const allText = $('body').text().toLowerCase();
+    if (allText.includes('årsregnskap') || allText.includes('arsregnskap')) {
+      console.log(`[${orgnr}] Fant "årsregnskap" tekst i body, men ingen seksjon`);
+    }
     return [];
   }
 

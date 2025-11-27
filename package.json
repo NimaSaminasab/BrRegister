@@ -11,6 +11,7 @@
     "sync:pg": "ts-node --transpile-only src/sync-to-postgres.ts",
     "read:pg": "ts-node --transpile-only src/print-postgres-companies.ts",
     "scrape:annual-reports": "ts-node --transpile-only src/scrape-annual-reports.ts",
+    "cleanup:annual-reports": "ts-node --transpile-only src/cleanup-annual-reports.ts",
     "deploy": "cdk deploy",
     "synth": "cdk synth",
     "clean": "rm -rf dist cdk.out node_modules"

@@ -52,10 +52,55 @@ interface RawFinancialDocument {
 }
 
 const BASE_URL = 'https://virksomhet.brreg.no/nb/oppslag/enheter';
+const BASE_DOMAIN = 'https://virksomhet.brreg.no';
 const YEARS_TO_KEEP = 5;
 const USER_AGENT = 'br-register-annual-report-scraper/1.0 (+https://github.com/NimaSaminasab/BrRegister)';
 const YEAR_REGEX = /^(19|20)\d{2}$/;
 const STATEMENT_YEAR_FIELDS = ['year', 'år', 'aar', 'ar', 'reportingYear', 'statementYear', 'arsregnskapAar'];
+
+function isPlaceholderUrl(url?: string | null): boolean {
+  if (!url) {
+    return true;
+  }
+
+  const normalized = url.trim().toLowerCase();
+  return (
+    !normalized ||
+    normalized === '#' ||
+    normalized.startsWith('javascript:') ||
+    normalized.startsWith('about:')
+  );
+}
+
+function normalizeDocumentUrl(rawUrl?: string | null): string | null {
+  if (!rawUrl || isPlaceholderUrl(rawUrl)) {
+    return null;
+  }
+
+  const trimmed = rawUrl.trim();
+  if (/^https?:\/\//i.test(trimmed)) {
+    return trimmed;
+  }
+
+  if (trimmed.startsWith('//')) {
+    return `https:${trimmed}`;
+  }
+
+  if (trimmed.startsWith('/')) {
+    return `${BASE_DOMAIN}${trimmed}`;
+  }
+
+  return `${BASE_DOMAIN}/${trimmed.replace(/^\/+/, '')}`;
+}
+
+function isLikelyPdfUrl(rawUrl?: string | null): boolean {
+  if (!rawUrl || isPlaceholderUrl(rawUrl)) {
+    return false;
+  }
+
+  const value = rawUrl.trim().toLowerCase();
+  return value.includes('.pdf');
+}
 
 async function main() {
   const orgArgs = process.argv.slice(2).map((value) => value.replace(/\D+/g, '')).filter(Boolean);
@@ -179,41 +224,58 @@ async function fetchAnnualReports(orgnr: string): Promise<AnnualReport[]> {
     await new Promise((resolve) => setTimeout(resolve, 2000));
     
     // Try to extract PDF links directly from the page using JavaScript
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const pdfLinks = await page.evaluate(() => {
       const links: Array<{ year: number; url: string; text: string }> = [];
-      
-      // Find all links - document is available in browser context
-      // @ts-ignore - document is available in Puppeteer's evaluate context
-      const allLinks = Array.from(document.querySelectorAll('a'));
-      
+      const allLinks = Array.from(document.querySelectorAll<HTMLAnchorElement>('a'));
+
       for (const link of allLinks) {
-        // @ts-ignore - link methods are available in browser context
         const href = link.getAttribute('href');
-        // @ts-ignore
-        const text = link.textContent?.toLowerCase() || '';
-        
-        // Skip hash links
-        if (!href || href === '#' || href.startsWith('#')) {
+        const text = link.textContent?.toLowerCase() ?? '';
+
+        if (!href) {
           continue;
         }
-        
-        // Check if it's a PDF link or related to årsregnskap
-        if (href.includes('.pdf') || href.includes('pdf') || 
-            text.includes('årsregnskap') || text.includes('arsregnskap') ||
-            text.includes('regnskap')) {
-          
-          // Try to find year nearby
-          let year: number | null = null;
-          
-          // Check parent elements for year
-          // @ts-ignore
-          let parent: Element | null = link.parentElement;
-          let depth = 0;
-          while (parent && depth < 5) {
-            // @ts-ignore
-            const parentText = parent.textContent || '';
-            const yearMatch = parentText.match(/\b(20\d{2})\b/);
+
+        const normalizedHref = href.trim();
+        const lowerHref = normalizedHref.toLowerCase();
+
+        if (
+          !normalizedHref ||
+          normalizedHref === '#' ||
+          normalizedHref.startsWith('#') ||
+          lowerHref.startsWith('javascript:') ||
+          lowerHref.startsWith('about:')
+        ) {
+          continue;
+        }
+
+        if (!lowerHref.includes('.pdf')) {
+          continue;
+        }
+
+        let year: number | null = null;
+        let parent: Element | null = link.parentElement;
+        let depth = 0;
+
+        while (parent && depth < 5) {
+          const parentText = parent.textContent ?? '';
+          const yearMatch = parentText.match(/\b(20\d{2})\b/);
+          if (yearMatch) {
+            const candidateYear = parseInt(yearMatch[1], 10);
+            if (candidateYear >= 2000 && candidateYear <= new Date().getFullYear()) {
+              year = candidateYear;
+              break;
+            }
+          }
+          parent = parent.parentElement;
+          depth += 1;
+        }
+
+        if (!year && link.parentElement) {
+          const siblings = Array.from(link.parentElement.children);
+          for (const sibling of siblings) {
+            const siblingText = sibling.textContent ?? '';
+            const yearMatch = siblingText.match(/\b(20\d{2})\b/);
             if (yearMatch) {
               const candidateYear = parseInt(yearMatch[1], 10);
               if (candidateYear >= 2000 && candidateYear <= new Date().getFullYear()) {
@@ -221,36 +283,17 @@ async function fetchAnnualReports(orgnr: string): Promise<AnnualReport[]> {
                 break;
               }
             }
-            // @ts-ignore
-            parent = parent.parentElement;
-            depth++;
-          }
-          
-          // If no year found, check siblings
-          if (!year) {
-            // @ts-ignore - Element is available in browser context
-            const siblings = Array.from(link.parentElement?.children || []);
-            for (const sibling of siblings) {
-              // @ts-ignore
-              const siblingText = sibling.textContent || '';
-              const yearMatch = siblingText.match(/\b(20\d{2})\b/);
-              if (yearMatch) {
-                const candidateYear = parseInt(yearMatch[1], 10);
-                if (candidateYear >= 2000 && candidateYear <= new Date().getFullYear()) {
-                  year = candidateYear;
-                  break;
-                }
-              }
-            }
-          }
-          
-          if (year) {
-            // @ts-ignore
-            links.push({ year, url: href, text: link.textContent || '' });
           }
         }
+
+        if (year) {
+          const absoluteUrl = normalizedHref.startsWith('http')
+            ? normalizedHref
+            : new URL(normalizedHref, window.location.origin).toString();
+          links.push({ year, url: absoluteUrl, text: link.textContent ?? '' });
+        }
       }
-      
+
       return links;
     });
     
@@ -262,7 +305,11 @@ async function fetchAnnualReports(orgnr: string): Promise<AnnualReport[]> {
       for (const link of pdfLinks) {
         if (!seenYears.has(link.year)) {
           seenYears.add(link.year);
-          const absoluteUrl = link.url.startsWith('http') ? link.url : `https://virksomhet.brreg.no${link.url}`;
+          const absoluteUrl = normalizeDocumentUrl(link.url);
+          if (!absoluteUrl || !isLikelyPdfUrl(absoluteUrl)) {
+            continue;
+          }
+
           console.log(`[${orgnr}] Fant årsregnskap for ${link.year}: ${absoluteUrl}`);
           reports.push({
             year: link.year,
@@ -275,6 +322,7 @@ async function fetchAnnualReports(orgnr: string): Promise<AnnualReport[]> {
       }
       
       if (reports.length > 0) {
+        await enrichReportsWithPdfData(reports, orgnr);
         await browser.close();
         return reports;
       }
@@ -289,10 +337,24 @@ async function fetchAnnualReports(orgnr: string): Promise<AnnualReport[]> {
     const fromNextData = await extractAnnualReportsFromNextData(orgnr, $);
 
     if (fromNextData.length) {
+      await enrichReportsWithPdfData(fromNextData, orgnr);
       return fromNextData;
     }
 
-    return await extractAnnualReportsFromDom(orgnr, $);
+    const fromDom = await extractAnnualReportsFromDom(orgnr, $);
+    if (fromDom.length) {
+      await enrichReportsWithPdfData(fromDom, orgnr);
+      return fromDom;
+    }
+
+    const fromBody = await extractFromBodyText(orgnr, $);
+    if (fromBody.length) {
+      await enrichReportsWithPdfData(fromBody, orgnr);
+      return fromBody;
+    }
+
+    console.warn(`[${orgnr}] Fant ingen årsregnskap i HTML-kilden`);
+    return [];
   } catch (error) {
     await browser.close();
     console.error(`[${orgnr}] Feil med Puppeteer, prøver vanlig HTTP:`, (error as Error).message);
@@ -310,10 +372,24 @@ async function fetchAnnualReports(orgnr: string): Promise<AnnualReport[]> {
     const fromNextData = await extractAnnualReportsFromNextData(orgnr, $);
 
     if (fromNextData.length) {
+      await enrichReportsWithPdfData(fromNextData, orgnr);
       return fromNextData;
     }
 
-    return await extractAnnualReportsFromDom(orgnr, $);
+    const fromDom = await extractAnnualReportsFromDom(orgnr, $);
+    if (fromDom.length) {
+      await enrichReportsWithPdfData(fromDom, orgnr);
+      return fromDom;
+    }
+
+    const fromBody = await extractFromBodyText(orgnr, $);
+    if (fromBody.length) {
+      await enrichReportsWithPdfData(fromBody, orgnr);
+      return fromBody;
+    }
+
+    console.warn(`[${orgnr}] Fant ingen årsregnskap i fallback HTML-respons`);
+    return [];
   }
 }
 
@@ -462,20 +538,22 @@ async function buildDocumentsWithPdf(
   const result: AnnualReportDocument[] = [];
 
   for (const doc of documents) {
-    const url = extractDocumentUrl(doc);
-    if (!url) {
+    const rawUrl = extractDocumentUrl(doc);
+    const normalizedUrl = normalizeDocumentUrl(rawUrl);
+
+    if (!normalizedUrl || !isLikelyPdfUrl(normalizedUrl)) {
       continue;
     }
 
     const normalizedDoc: AnnualReportDocument = {
       title: doc.title ?? doc.name ?? doc.documentType ?? 'Dokument',
-      url,
+      url: normalizedUrl,
       type: doc.documentType ?? doc.type ?? null,
       size: doc.size ?? doc.fileSize ?? null,
     };
 
     try {
-      const pdfData = await downloadAndParsePdf(url);
+      const pdfData = await downloadAndParsePdf(normalizedUrl);
       normalizedDoc.pdfText = pdfData.text;
       normalizedDoc.pdfNumPages = pdfData.numPages;
       normalizedDoc.pdfInfo = pdfData.info;
@@ -508,6 +586,25 @@ async function downloadAndParsePdf(url: string): Promise<{ text: string; numPage
     numPages: parsed.numpages ?? 0,
     info: parsed.info ? (parsed.info as Record<string, unknown>) : {},
   };
+}
+
+async function enrichReportsWithPdfData(reports: AnnualReport[], orgnr: string): Promise<void> {
+  for (const report of reports) {
+    for (const document of report.data.documents ?? []) {
+      if (!document.url || !isLikelyPdfUrl(document.url) || document.pdfText) {
+        continue;
+      }
+
+      try {
+        const pdfData = await downloadAndParsePdf(document.url);
+        document.pdfText = pdfData.text;
+        document.pdfNumPages = pdfData.numPages;
+        document.pdfInfo = pdfData.info;
+      } catch (error) {
+        console.warn(`[${orgnr}] Klarte ikke å laste ned PDF for ${report.year} (${document.title}):`, (error as Error).message);
+      }
+    }
+  }
 }
 
 function dedupeReports(reports: AnnualReport[]): AnnualReport[] {
@@ -632,169 +729,144 @@ async function extractFromBodyText(orgnr: string, $: CheerioAPI): Promise<Annual
   console.log(`[${orgnr}] Prøver å finne årsregnskap direkte fra body-tekst...`);
   const reports: AnnualReport[] = [];
   const foundYears = new Set<number>();
-  
-  // Debug: Count all links
+
   const allLinks = $('a').length;
   console.log(`[${orgnr}] Totalt antall lenker på siden: ${allLinks}`);
-  
-  // Look for all links that might be related to annual reports
+
   let linksWithArsregnskap = 0;
   $('a').each((_: number, anchor: Element) => {
     const linkText = $(anchor).text().toLowerCase().trim();
-    let href = $(anchor).attr('href');
-    
-    if (!href) {
+    const href = $(anchor).attr('href');
+    const absoluteUrl = normalizeDocumentUrl(href);
+
+    if (!absoluteUrl || !isLikelyPdfUrl(absoluteUrl)) {
       return;
     }
-    
-    // Make relative URLs absolute
-    if (href.startsWith('/')) {
-      href = `https://virksomhet.brreg.no${href}`;
-    } else if (!href.startsWith('http')) {
-      href = `https://virksomhet.brreg.no/${href}`;
-    }
-    
-    // Skip hash links and invalid URLs
-    if (!href || href === '#' || href.startsWith('#') || href === '') {
-      return;
-    }
-    
-    // Check if link text contains "innsendt årsregnskap" or similar
-    if (linkText.includes('innsendt årsregnskap') || 
-        linkText.includes('innsendt arsregnskap')) {
-      linksWithArsregnskap++;
-      console.log(`[${orgnr}] Fant lenke med årsregnskap: "${linkText}" -> ${href}`);
-      
-      // Skip if it's just a hash link
-      if (href === '#' || href.startsWith('#')) {
-        return;
-      }
-      
-      // Try to find the year near this link - check parent, siblings, and nearby elements
+
+    if (
+      linkText.includes('innsendt årsregnskap') ||
+      linkText.includes('innsendt arsregnskap') ||
+      linkText.includes('årsregnskap') ||
+      linkText.includes('arsregnskap')
+    ) {
+      linksWithArsregnskap += 1;
       const parent = $(anchor).closest('div, section, article, li, p');
       let searchText = parent.text();
-      
-      // Also check previous siblings
+
       const prevSiblings = $(anchor).prevAll('h3, h4, strong, b, div').slice(0, 3);
       prevSiblings.each((_: number, el: Element) => {
-        searchText += ' ' + $(el).text();
+        searchText += ` ${$(el).text()}`;
       });
-      
-      // Look for year in the search text
+
       const yearMatches = searchText.match(/\b(20\d{2}|19\d{2})\b/g);
-      if (yearMatches && yearMatches.length > 0) {
-        // Take the most recent year found
-        const years = yearMatches.map((m: string) => Number(m)).filter((y: number) => y >= 2000 && y <= new Date().getFullYear());
-        if (years.length > 0) {
-          const year = Math.max(...years);
-          if (!foundYears.has(year) && (href.endsWith('.pdf') || href.includes('pdf') || href.includes('regnskap'))) {
-            foundYears.add(year);
-            console.log(`[${orgnr}] Fant årsregnskap for ${year} via lenke: ${href}`);
-            reports.push({
-              year,
-              data: {
-                source: 'body-text-link',
-                documents: [{ title: 'Innsendt årsregnskap', url: href }],
-              },
-            });
-          }
-        }
+      if (!yearMatches?.length) {
+        return;
       }
+
+      const years = yearMatches
+        .map((m: string) => Number(m))
+        .filter((y: number) => y >= 2000 && y <= new Date().getFullYear());
+
+      if (!years.length) {
+        return;
+      }
+
+      const year = Math.max(...years);
+      if (foundYears.has(year)) {
+        return;
+      }
+
+      foundYears.add(year);
+      console.log(`[${orgnr}] Fant årsregnskap for ${year} via lenke: ${absoluteUrl}`);
+      reports.push({
+        year,
+        data: {
+          source: 'body-text-link',
+          documents: [{ title: 'Innsendt årsregnskap', url: absoluteUrl }],
+        },
+      });
     }
   });
-  
+
   console.log(`[${orgnr}] Fant ${linksWithArsregnskap} lenker med årsregnskap-tekst`);
-  
-  // Try to find years and links by searching for year patterns near "Innsendt årsregnskap" text
-  // Look for elements that contain both a year and "Innsendt årsregnskap"
+
   $('*').each((_: number, element: Element) => {
-    const elementText = $(element).text();
-    const html = $(element).html() || '';
-    
-    // Check if this element contains both a year and "innsendt årsregnskap"
+    const elementText = $(element).text().toLowerCase();
     const yearMatch = elementText.match(/\b(20\d{2})\b/);
-    if (yearMatch && (elementText.toLowerCase().includes('innsendt årsregnskap') || 
-                      elementText.toLowerCase().includes('innsendt arsregnskap'))) {
-      const year = Number(yearMatch[0]);
-      if (year >= 2000 && year <= new Date().getFullYear() && !foundYears.has(year)) {
-        // Find link in this element or its children
-        const link = $(element).find('a').first();
-        const href = link.attr('href');
-        
-        // Only add if it's a valid URL (not just # or empty)
-        if (href && href !== '#' && !href.startsWith('#') && (href.endsWith('.pdf') || href.includes('pdf') || href.includes('regnskap'))) {
-          foundYears.add(year);
-          const absoluteUrl = href.startsWith('http') ? href : `https://virksomhet.brreg.no${href}`;
-          console.log(`[${orgnr}] Fant årsregnskap for ${year} via element-søk: ${absoluteUrl}`);
-          reports.push({
-            year,
-            data: {
-              source: 'element-search',
-              documents: [{ title: 'Innsendt årsregnskap', url: absoluteUrl }],
-            },
-          });
-        }
-      }
+
+    if (
+      !yearMatch ||
+      (!elementText.includes('innsendt årsregnskap') && !elementText.includes('innsendt arsregnskap'))
+    ) {
+      return;
     }
+
+    const year = Number(yearMatch[0]);
+    if (year < 2000 || year > new Date().getFullYear() || foundYears.has(year)) {
+      return;
+    }
+
+    const link = $(element).find('a').first();
+    const absoluteUrl = normalizeDocumentUrl(link.attr('href'));
+
+    if (!absoluteUrl || !isLikelyPdfUrl(absoluteUrl)) {
+      return;
+    }
+
+    foundYears.add(year);
+    console.log(`[${orgnr}] Fant årsregnskap for ${year} via element-søk: ${absoluteUrl}`);
+    reports.push({
+      year,
+      data: {
+        source: 'element-search',
+        documents: [{ title: 'Innsendt årsregnskap', url: absoluteUrl }],
+      },
+    });
   });
-  
-  // Also look for year headings followed by links
+
   $('h3, h4, strong, b').each((_: number, heading: Element) => {
     const headingText = $(heading).text();
     const yearMatch = headingText.match(YEAR_REGEX);
-    
-    if (yearMatch && !foundYears.has(Number(yearMatch[0]))) {
-      const year = Number(yearMatch[0]);
-      const nextSibling = $(heading).next();
-      const link = nextSibling.find('a').filter((_: number, a: Element) => {
+
+    if (!yearMatch) {
+      return;
+    }
+
+    const year = Number(yearMatch[0]);
+    if (foundYears.has(year)) {
+      return;
+    }
+
+    const nextSibling = $(heading).next();
+    const link = nextSibling
+      .find('a')
+      .filter((_: number, a: Element) => {
         const text = $(a).text().toLowerCase();
         return text.includes('innsendt årsregnskap') || text.includes('innsendt arsregnskap');
-      }).first();
-      
-      if (link.length) {
-        const href = link.attr('href');
-        // Only add if it's a valid URL (not just # or empty)
-        if (href && href !== '#' && !href.startsWith('#') && (href.endsWith('.pdf') || href.includes('pdf') || href.includes('regnskap'))) {
-          foundYears.add(year);
-          console.log(`[${orgnr}] Fant årsregnskap for ${year} via overskrift + lenke: ${href}`);
-          reports.push({
-            year,
-            data: {
-              source: 'heading-link',
-              documents: [{ title: 'Innsendt årsregnskap', url: href }],
-            },
-          });
-        }
-      }
+      })
+      .first();
+
+    if (!link.length) {
+      return;
     }
+
+    const absoluteUrl = normalizeDocumentUrl(link.attr('href'));
+    if (!absoluteUrl || !isLikelyPdfUrl(absoluteUrl)) {
+      return;
+    }
+
+    foundYears.add(year);
+    console.log(`[${orgnr}] Fant årsregnskap for ${year} via overskrift + lenke: ${absoluteUrl}`);
+    reports.push({
+      year,
+      data: {
+        source: 'heading-link',
+        documents: [{ title: 'Innsendt årsregnskap', url: absoluteUrl }],
+      },
+    });
   });
-  
-  // Now fetch PDFs for all found reports
-  const reportsWithPdfs: AnnualReport[] = [];
-  for (const report of reports) {
-    try {
-      // Convert AnnualReportDocument[] to RawFinancialDocument[] for buildDocumentsWithPdf
-      const rawDocs: RawFinancialDocument[] = (report.data.documents ?? []).map((doc) => ({
-        title: doc.title,
-        url: doc.url,
-        type: doc.type ?? undefined,
-      }));
-      const documents = await buildDocumentsWithPdf(rawDocs, orgnr, report.year);
-      reportsWithPdfs.push({
-        year: report.year,
-        data: {
-          ...report.data,
-          documents,
-        },
-      });
-    } catch (error) {
-      console.warn(`[${orgnr}] Klarte ikke å hente PDF for ${report.year}:`, (error as Error).message);
-      // Still add the report without PDF
-      reportsWithPdfs.push(report);
-    }
-  }
-  
-  return dedupeReports(reportsWithPdfs);
+
+  return dedupeReports(reports);
 }
 
 main().catch((error) => {

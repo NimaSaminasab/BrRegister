@@ -409,10 +409,13 @@ async function extractFromRegnskapApi(orgnr: string): Promise<AnnualReport[]> {
     }
 
     const reports: AnnualReport[] = [];
+    const seenYears = new Set<number>();
+    
     for (const entry of entries) {
-      if (!entry.year) {
+      if (!entry.year || seenYears.has(entry.year)) {
         continue;
       }
+      seenYears.add(entry.year);
 
       const rawDocs = mapApiDocumentsToRaw(entry.documents);
       let documents: AnnualReportDocument[] = [];
@@ -422,7 +425,6 @@ async function extractFromRegnskapApi(orgnr: string): Promise<AnnualReport[]> {
         documents = await buildDocumentsWithPdf(rawDocs, orgnr, entry.year);
       } else {
         // Hvis ikke, lagre regnskapstallene direkte (API-et gir JSON-data, ikke PDF-lenker)
-        console.log(`[${orgnr}] Regnskap API-respons for ${entry.year} inneholder regnskapstall (ingen PDF-lenker)`);
         documents = [{
           title: `Årsregnskap ${entry.year}`,
           url: `https://data.brreg.no/regnskapsregisteret/regnskap/${orgnr}?ar=${entry.year}`,
@@ -439,6 +441,11 @@ async function extractFromRegnskapApi(orgnr: string): Promise<AnnualReport[]> {
           raw: entry.raw,
         },
       });
+    }
+
+    if (reports.length > 0) {
+      const years = reports.map(r => r.year).join(', ');
+      console.log(`[${orgnr}] Fant ${reports.length} årsregnskap via Regnskapsregisteret API (år: ${years})`);
     }
 
     return dedupeReports(reports);

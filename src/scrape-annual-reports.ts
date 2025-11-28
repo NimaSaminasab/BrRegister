@@ -6,6 +6,7 @@ import pdf from 'pdf-parse';
 import puppeteer from 'puppeteer';
 
 import { createPostgresClient, getPostgresEnvConfig } from './postgres';
+import { fetchRegnskapApiEntries } from './regnskap-api';
 
 dotenv.config();
 
@@ -20,7 +21,7 @@ interface AnnualReportDocument {
 }
 
 interface AnnualReportPayload extends Record<string, unknown> {
-  source: 'next-data' | 'dom' | 'body-text-link' | 'heading-link' | 'element-search' | 'regex-pattern' | 'puppeteer-js';
+  source: 'next-data' | 'dom' | 'body-text-link' | 'heading-link' | 'element-search' | 'regex-pattern' | 'puppeteer-js' | 'regnskap-api';
   summary?: Record<string, unknown>;
   documents: AnnualReportDocument[];
   raw?: Record<string, unknown>;
@@ -180,6 +181,12 @@ async function upsertAnnualReport(
 }
 
 async function fetchAnnualReports(orgnr: string): Promise<AnnualReport[]> {
+  const apiReports = await extractFromRegnskapApi(orgnr);
+  if (apiReports.length) {
+    console.log(`[${orgnr}] Fant ${apiReports.length} årsregnskap via Regnskapsregisteret API`);
+    return apiReports;
+  }
+
   const url = `${BASE_URL}/${orgnr}`;
   
   console.log(`[${orgnr}] Bruker Puppeteer for å laste dynamisk innhold...`);
@@ -393,10 +400,144 @@ async function fetchAnnualReports(orgnr: string): Promise<AnnualReport[]> {
   }
 }
 
-function extractFromApiData(orgnr: string, apiData: unknown): AnnualReport[] {
-  // This would parse API response if it contains annual reports
-  // For now, return empty - we'll implement if API has this data
-  return [];
+async function extractFromRegnskapApi(orgnr: string): Promise<AnnualReport[]> {
+  try {
+    const entries = await fetchRegnskapApiEntries(orgnr, YEARS_TO_KEEP * 2);
+    if (!entries.length) {
+      console.log(`[${orgnr}] Ingen årsregnskap funnet i Regnskapsregisteret API`);
+      return [];
+    }
+
+    const reports: AnnualReport[] = [];
+    for (const entry of entries) {
+      if (!entry.year) {
+        continue;
+      }
+
+      const rawDocs = mapApiDocumentsToRaw(entry.documents);
+      let documents: AnnualReportDocument[] = [];
+      
+      if (rawDocs.length > 0) {
+        // Hvis vi har PDF-lenker, last dem ned og parse dem
+        documents = await buildDocumentsWithPdf(rawDocs, orgnr, entry.year);
+      } else {
+        // Hvis ikke, lagre regnskapstallene direkte (API-et gir JSON-data, ikke PDF-lenker)
+        console.log(`[${orgnr}] Regnskap API-respons for ${entry.year} inneholder regnskapstall (ingen PDF-lenker)`);
+        documents = [{
+          title: `Årsregnskap ${entry.year}`,
+          url: `https://data.brreg.no/regnskapsregisteret/regnskap/${orgnr}?ar=${entry.year}`,
+          type: 'regnskap-json',
+        }];
+      }
+
+      reports.push({
+        year: entry.year,
+        data: {
+          source: 'regnskap-api',
+          summary: entry.raw,
+          documents,
+          raw: entry.raw,
+        },
+      });
+    }
+
+    return dedupeReports(reports);
+  } catch (error) {
+    console.warn(`[${orgnr}] Feil ved henting fra Regnskapsregisteret API:`, (error as Error).message);
+    return [];
+  }
+}
+
+function mapApiDocumentsToRaw(documents: Array<Record<string, unknown>>): RawFinancialDocument[] {
+  const results: RawFinancialDocument[] = [];
+  const seen = new Set<string>();
+
+  for (const doc of documents) {
+    const flattened = flattenApiDocument(doc);
+    for (const candidate of flattened) {
+      const url = extractUrlFromDocument(candidate);
+      if (!url || seen.has(url)) {
+        continue;
+      }
+      seen.add(url);
+      results.push({
+        title: extractTitleFromDocument(candidate),
+        url,
+        type: extractTypeFromDocument(candidate),
+        size: extractSizeFromDocument(candidate),
+      });
+    }
+  }
+
+  return results;
+}
+
+function flattenApiDocument(doc: Record<string, unknown>): Array<Record<string, unknown>> {
+  const flattened: Array<Record<string, unknown>> = [doc];
+  const nestedLinkKeys = ['lenker', 'links', 'vedlegg', 'vedleggLenker'];
+
+  for (const key of nestedLinkKeys) {
+    const nested = doc[key];
+    if (Array.isArray(nested)) {
+      for (const link of nested) {
+        if (link && typeof link === 'object') {
+          flattened.push({ ...doc, ...(link as Record<string, unknown>) });
+        }
+      }
+    }
+  }
+
+  return flattened;
+}
+
+function extractUrlFromDocument(doc: Record<string, unknown>): string | null {
+  const fields = ['downloadUrl', 'url', 'href', 'lenke', 'link', 'adresse'];
+  for (const field of fields) {
+    const value = doc[field];
+    if (typeof value === 'string' && value.trim().length > 0) {
+      return value.trim();
+    }
+  }
+  return null;
+}
+
+function extractTitleFromDocument(doc: Record<string, unknown>): string {
+  const fields = ['tittel', 'title', 'navn', 'name', 'dokumentType', 'documentType'];
+  for (const field of fields) {
+    const value = doc[field];
+    if (typeof value === 'string' && value.trim().length > 0) {
+      return value.trim();
+    }
+  }
+  return 'Innsendt årsregnskap';
+}
+
+function extractTypeFromDocument(doc: Record<string, unknown>): string | undefined {
+  const fields = ['dokumentType', 'documentType', 'type', 'format'];
+  for (const field of fields) {
+    const value = doc[field];
+    if (typeof value === 'string' && value.trim().length > 0) {
+      return value.trim();
+    }
+  }
+  return undefined;
+}
+
+function extractSizeFromDocument(doc: Record<string, unknown>): number | undefined {
+  const fields = ['storrelse', 'størrelse', 'size', 'filstorrelse', 'fileSize'];
+  for (const field of fields) {
+    const value = doc[field];
+    if (typeof value === 'number' && Number.isFinite(value)) {
+      return value;
+    }
+    if (typeof value === 'string') {
+      const parsed = Number(value.replace(/\D+/g, ''));
+      if (!Number.isNaN(parsed) && parsed > 0) {
+        return parsed;
+      }
+    }
+  }
+  return undefined;
 }
 
 async function extractAnnualReportsFromNextData(orgnr: string, $: CheerioAPI): Promise<AnnualReport[]> {

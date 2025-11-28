@@ -25,17 +25,28 @@ const MIN_YEAR = 1990;
 export async function fetchRegnskapApiEntries(orgnr: string, maxResults = 10): Promise<RegnskapApiEntry[]> {
   const { minYear, maxYear } = await deriveYearBounds(orgnr);
   const entries: RegnskapApiEntry[] = [];
-
+  const seenJournalNumbers = new Set<string | number>();
+  
+  // Prøv å hente regnskap for hvert år
   for (let year = maxYear; year >= minYear; year -= 1) {
     const entry = await fetchRegnskapForYear(orgnr, year);
     if (entry) {
+      // Filtrer bort duplikater basert på journalnummer (API returnerer samme regnskap for alle år)
+      const journalNr = entry.raw.journalnr || entry.raw.id;
+      if (journalNr && (typeof journalNr === 'string' || typeof journalNr === 'number')) {
+        if (seenJournalNumbers.has(journalNr)) {
+          continue; // Skip duplikat
+        }
+        seenJournalNumbers.add(journalNr);
+      }
+      
       entries.push(entry);
       if (entries.length >= maxResults) {
         break;
       }
     }
   }
-
+  
   return entries;
 }
 
@@ -115,7 +126,7 @@ async function fetchRegnskapForYear(orgnr: string, year: number): Promise<Regnsk
   return null;
 }
 
-function normalizeRegnskapResponse(data: unknown, fallbackYear: number): RegnskapApiEntry | null {
+function normalizeRegnskapResponse(data: unknown, requestedYear: number): RegnskapApiEntry | null {
   if (!data) {
     return null;
   }
@@ -126,10 +137,15 @@ function normalizeRegnskapResponse(data: unknown, fallbackYear: number): Regnska
   }
 
   for (const candidate of candidates) {
-    const year = extractYearFromCandidate(candidate, fallbackYear);
-    if (!year) {
+    // Hent faktisk år fra regnskapsperiode, ikke fra requestedYear
+    const actualYear = extractYearFromCandidate(candidate, requestedYear);
+    if (!actualYear) {
       continue;
     }
+    
+    // Hvis faktisk år ikke matcher requestedYear, ignorer denne (API returnerte feil år)
+    // Men hvis requestedYear er samme som faktisk år, eller hvis vi ikke har noe annet valg, bruk den
+    const year = actualYear;
 
     const documents = extractDocumentsFromCandidate(candidate);
     return {

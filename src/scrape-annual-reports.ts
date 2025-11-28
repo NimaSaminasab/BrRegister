@@ -401,7 +401,39 @@ async function fetchAnnualReports(orgnr: string): Promise<AnnualReport[]> {
 async function extractFromRegnskapApi(orgnr: string): Promise<AnnualReport[]> {
   try {
     // Hent alle tilgjengelige årsregnskap (ingen maxResults-begrensning)
-    const entries = await fetchRegnskapApiEntries(orgnr, 999);
+    let entries = await fetchRegnskapApiEntries(orgnr, 999);
+    
+    // Hvis vi bare fikk ett regnskap, prøv alternative metoder
+    if (entries.length <= 1) {
+      console.log(`[${orgnr}] Prøver alternative metoder for å finne flere årsregnskap...`);
+      
+      // Prøv å hente uten år-parameter
+      const { fetchAllRegnskapForOrg } = await import('./regnskap-bulk');
+      const allRegnskap = await fetchAllRegnskapForOrg(orgnr);
+      
+      if (allRegnskap.length > entries.length) {
+        // Konverter til RegnskapApiEntry-format
+        const additionalEntries: Array<{ year: number; documents: Array<Record<string, unknown>>; raw: Record<string, unknown> }> = [];
+        for (const regnskap of allRegnskap) {
+          if (typeof regnskap === 'object' && regnskap !== null) {
+            const regnskapObj = regnskap as Record<string, unknown>;
+            const periode = regnskapObj.regnskapsperiode as Record<string, unknown> | undefined;
+            const tilDato = periode?.tilDato as string | undefined;
+            const year = tilDato ? parseInt(tilDato.substring(0, 4), 10) : null;
+            
+            if (year && !entries.some(e => e.year === year)) {
+              additionalEntries.push({
+                year,
+                documents: [],
+                raw: regnskapObj,
+              });
+            }
+          }
+        }
+        entries = [...entries, ...additionalEntries];
+      }
+    }
+    
     if (!entries.length) {
       console.log(`[${orgnr}] Ingen årsregnskap funnet i Regnskapsregisteret API`);
       return [];

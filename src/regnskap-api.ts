@@ -19,7 +19,7 @@ export interface RegnskapApiEntry {
 
 const REGNSKAP_API_BASE = 'https://data.brreg.no/regnskapsregisteret/regnskap';
 const ENHETSREGISTERET_API_BASE = 'https://data.brreg.no/enhetsregisteret/api/enheter';
-const DEFAULT_LOOKBACK_YEARS = 10;
+const DEFAULT_LOOKBACK_YEARS = 50; // Økt fra 10 til 50 for å hente flere år
 const MIN_YEAR = 1990;
 
 export async function fetchRegnskapApiEntries(orgnr: string, maxResults = 10): Promise<RegnskapApiEntry[]> {

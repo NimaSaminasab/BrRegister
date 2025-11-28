@@ -125,16 +125,14 @@ async function main() {
         continue;
       }
 
-      const limited = reports
-        .sort((a, b) => b.year - a.year)
-        .slice(0, YEARS_TO_KEEP);
+      const sorted = reports.sort((a, b) => b.year - a.year);
 
-      for (const report of limited) {
+      for (const report of sorted) {
         await upsertAnnualReport(client, orgnr, report);
       }
 
       processed += 1;
-      console.log(`[${orgnr}] Lagret ${limited.length} årsrapporter (${processed}/${organisasjonsnumre.length})`);
+      console.log(`[${orgnr}] Lagret ${sorted.length} årsrapporter (${processed}/${organisasjonsnumre.length})`);
     } catch (error) {
       console.error(`[${orgnr}] Klarte ikke å hente årsregnskap`, error);
     }
@@ -402,7 +400,8 @@ async function fetchAnnualReports(orgnr: string): Promise<AnnualReport[]> {
 
 async function extractFromRegnskapApi(orgnr: string): Promise<AnnualReport[]> {
   try {
-    const entries = await fetchRegnskapApiEntries(orgnr, YEARS_TO_KEEP * 2);
+    // Hent alle tilgjengelige årsregnskap (ingen maxResults-begrensning)
+    const entries = await fetchRegnskapApiEntries(orgnr, 999);
     if (!entries.length) {
       console.log(`[${orgnr}] Ingen årsregnskap funnet i Regnskapsregisteret API`);
       return [];

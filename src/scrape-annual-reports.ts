@@ -180,8 +180,18 @@ async function upsertAnnualReport(
 
 async function fetchAnnualReports(orgnr: string): Promise<AnnualReport[]> {
   const apiReports = await extractFromRegnskapApi(orgnr);
+  
+  // Hvis vi har API-data, prøv også å hente PDF-lenker fra virksomhetssiden
   if (apiReports.length) {
-    console.log(`[${orgnr}] Fant ${apiReports.length} årsregnskap via Regnskapsregisteret API`);
+    console.log(`[${orgnr}] Fant ${apiReports.length} årsregnskap via Regnskapsregisteret API, søker etter PDF-lenker...`);
+    
+    // Prøv å hente PDF-lenker fra virksomhetssiden og legge dem til eksisterende rapporter
+    const pdfReports = await extractPdfLinksFromVirksomhetPage(orgnr, apiReports);
+    if (pdfReports.length > 0) {
+      console.log(`[${orgnr}] Fant ${pdfReports.length} PDF-lenker fra virksomhetssiden`);
+      return pdfReports;
+    }
+    
     return apiReports;
   }
 
@@ -395,6 +405,147 @@ async function fetchAnnualReports(orgnr: string): Promise<AnnualReport[]> {
 
     console.warn(`[${orgnr}] Fant ingen årsregnskap i fallback HTML-respons`);
     return [];
+  }
+}
+
+async function extractPdfLinksFromVirksomhetPage(orgnr: string, existingReports: AnnualReport[]): Promise<AnnualReport[]> {
+  const url = `${BASE_URL}/${orgnr}`;
+  const browser = await puppeteer.launch({
+    headless: true,
+    args: ['--no-sandbox', '--disable-setuid-sandbox'],
+  });
+
+  try {
+    const page = await browser.newPage();
+    await page.setUserAgent(USER_AGENT);
+    await page.setExtraHTTPHeaders({
+      'Accept-Language': 'nb-NO,nb;q=0.9',
+    });
+    
+    await page.goto(url, { waitUntil: 'networkidle2', timeout: 30000 });
+    await new Promise((resolve) => setTimeout(resolve, 2000));
+    
+    // Prøv å ekspandere årsregnskap-seksjon
+    try {
+      const buttons = await page.$x("//button[contains(translate(text(), 'Å', 'å'), 'årsregnskap')] | //a[contains(translate(text(), 'Å', 'å'), 'årsregnskap')] | //div[@role='button' and contains(translate(text(), 'Å', 'å'), 'årsregnskap')]");
+      for (const button of buttons) {
+        try {
+          await button.click();
+          await new Promise((resolve) => setTimeout(resolve, 1000));
+        } catch (e) {
+          // Ignore
+        }
+      }
+    } catch (error) {
+      // Ignore
+    }
+    
+    await new Promise((resolve) => setTimeout(resolve, 2000));
+    
+    // Finn PDF-lenker
+    const pdfLinks = await page.evaluate(() => {
+      const links: Array<{ year: number; url: string; text: string }> = [];
+      const allLinks = Array.from(document.querySelectorAll<HTMLAnchorElement>('a'));
+
+      for (const link of allLinks) {
+        const href = link.getAttribute('href');
+        if (!href) continue;
+
+        const normalizedHref = href.trim();
+        const lowerHref = normalizedHref.toLowerCase();
+
+        if (normalizedHref === '#' || normalizedHref.startsWith('#') || 
+            lowerHref.startsWith('javascript:') || lowerHref.startsWith('about:')) {
+          continue;
+        }
+
+        if (!lowerHref.includes('.pdf')) {
+          continue;
+        }
+
+        let year: number | null = null;
+        let parent: Element | null = link.parentElement;
+        let depth = 0;
+
+        while (parent && depth < 5) {
+          const parentText = parent.textContent ?? '';
+          const yearMatch = parentText.match(/\b(20\d{2})\b/);
+          if (yearMatch) {
+            const candidateYear = parseInt(yearMatch[1], 10);
+            if (candidateYear >= 2000 && candidateYear <= new Date().getFullYear()) {
+              year = candidateYear;
+              break;
+            }
+          }
+          parent = parent.parentElement;
+          depth += 1;
+        }
+
+        if (year) {
+          const absoluteUrl = normalizedHref.startsWith('http')
+            ? normalizedHref
+            : new URL(normalizedHref, window.location.origin).toString();
+          links.push({ year, url: absoluteUrl, text: link.textContent ?? '' });
+        }
+      }
+
+      return links;
+    });
+    
+    await browser.close();
+    
+    // Kombiner eksisterende rapporter med PDF-lenker
+    const reportsMap = new Map<number, AnnualReport>();
+    
+    // Legg til eksisterende rapporter
+    for (const report of existingReports) {
+      reportsMap.set(report.year, { ...report });
+    }
+    
+    // Legg til PDF-lenker
+    for (const link of pdfLinks) {
+      const absoluteUrl = normalizeDocumentUrl(link.url);
+      if (!absoluteUrl || !isLikelyPdfUrl(absoluteUrl)) {
+        continue;
+      }
+      
+      const existingReport = reportsMap.get(link.year);
+      if (existingReport) {
+        // Legg til PDF-lenke i eksisterende rapport
+        const hasPdf = existingReport.data.documents.some(d => d.url === absoluteUrl);
+        if (!hasPdf) {
+          existingReport.data.documents.push({
+            title: `Årsregnskap PDF ${link.year}`,
+            url: absoluteUrl,
+            type: 'pdf',
+          });
+        }
+      } else {
+        // Opprett ny rapport med PDF-lenke
+        reportsMap.set(link.year, {
+          year: link.year,
+          data: {
+            source: 'puppeteer-js',
+            documents: [{
+              title: `Årsregnskap PDF ${link.year}`,
+              url: absoluteUrl,
+              type: 'pdf',
+            }],
+          },
+        });
+      }
+    }
+    
+    const reports = Array.from(reportsMap.values());
+    
+    // Last ned og parse PDF-ene
+    await enrichReportsWithPdfData(reports, orgnr);
+    
+    return reports;
+  } catch (error) {
+    await browser.close();
+    console.warn(`[${orgnr}] Feil ved henting av PDF-lenker fra virksomhetssiden:`, (error as Error).message);
+    return existingReports;
   }
 }
 

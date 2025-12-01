@@ -769,8 +769,40 @@ async function extractFromRegnskapApi(orgnr: string): Promise<AnnualReport[]> {
       if (rawDocs.length > 0) {
         // Hvis vi har PDF-lenker, last dem ned og parse dem
         documents = await buildDocumentsWithPdf(rawDocs, orgnr, entry.year);
-      } else {
-        // Hvis ikke, lagre regnskapstallene direkte (API-et gir JSON-data, ikke PDF-lenker)
+      }
+      
+      // Hvis vi ikke har PDF-lenker fra API-et, prøv å konstruere en PDF-URL
+      // eller prøv å hente PDF direkte fra Regnskapsregisteret
+      if (documents.length === 0 || !documents.some(d => d.url && isLikelyPdfUrl(d.url))) {
+        // Prøv å konstruere en mulig PDF-URL basert på organisasjonsnummer og år
+        const possiblePdfUrls = [
+          `https://data.brreg.no/regnskapsregisteret/regnskap/${orgnr}/${entry.year}.pdf`,
+          `https://www.brreg.no/regnskapsregisteret/regnskap/${orgnr}/${entry.year}.pdf`,
+          `https://data.brreg.no/regnskapsregisteret/regnskap/${orgnr}?ar=${entry.year}&format=pdf`,
+        ];
+        
+        // Prøv hver mulig URL for å se om den eksisterer
+        for (const pdfUrl of possiblePdfUrls) {
+          try {
+            const response = await axios.head(pdfUrl, { timeout: 5000 });
+            if (response.status === 200 && response.headers['content-type']?.includes('pdf')) {
+              console.log(`[${orgnr}] Fant PDF-URL for ${entry.year}: ${pdfUrl}`);
+              documents.push({
+                title: `Årsregnskap ${entry.year}`,
+                url: pdfUrl,
+                type: 'pdf',
+              });
+              break;
+            }
+          } catch (error) {
+            // URL eksisterer ikke, prøv neste
+            continue;
+          }
+        }
+      }
+      
+      // Hvis vi fortsatt ikke har PDF-lenker, lagre JSON-data som fallback
+      if (documents.length === 0) {
         documents = [{
           title: `Årsregnskap ${entry.year}`,
           url: `https://data.brreg.no/regnskapsregisteret/regnskap/${orgnr}?ar=${entry.year}`,

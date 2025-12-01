@@ -486,15 +486,33 @@ async function extractPdfLinksFromVirksomhetPage(orgnr: string, existingReports:
     
     // Prøv å ekspandere årsregnskap-seksjon - prøv flere metoder
     console.log(`[${orgnr}] Prøver å ekspandere årsregnskap-seksjon...`);
+    
+    // Sett opp nettverksmonitorering FØR vi klikker for å fange opp PDF-er
+    const networkPdfUrls: string[] = [];
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const responseHandler = (response: any) => {
+      const url = response.url();
+      const contentType = response.headers()['content-type'] || '';
+      if (url.includes('.pdf') || contentType.includes('application/pdf')) {
+        networkPdfUrls.push(url);
+        console.log(`[${orgnr}] ✅ Fant PDF i nettverksforespørsel: ${url.substring(0, 150)}`);
+      }
+    };
+    page.on('response', responseHandler);
+    
     try {
       // Metode 1: Bruk evaluate for å finne og klikke på elementer med årsregnskap-tekst
       await page.evaluate(() => {
         // Finn alle klikkbare elementer
-        const allClickable = Array.from(document.querySelectorAll('button, [role="button"], a, .accordion, .collapse, [aria-expanded], [data-toggle="collapse"]'));
+        const allClickable = Array.from(document.querySelectorAll('button, [role="button"], a, .accordion, .collapse, [aria-expanded], [data-toggle="collapse"], [aria-controls]'));
         
         for (const el of allClickable) {
           const text = el.textContent?.toLowerCase() || '';
-          if (text.includes('årsregnskap') || text.includes('arsregnskap') || text.includes('regnskap')) {
+          const ariaLabel = el.getAttribute('aria-label')?.toLowerCase() || '';
+          const title = el.getAttribute('title')?.toLowerCase() || '';
+          const combinedText = `${text} ${ariaLabel} ${title}`;
+          
+          if (combinedText.includes('årsregnskap') || combinedText.includes('arsregnskap') || combinedText.includes('regnskap') || combinedText.includes('årsresultat')) {
             try {
               (el as HTMLElement).click();
             } catch (e) {
@@ -504,7 +522,32 @@ async function extractPdfLinksFromVirksomhetPage(orgnr: string, existingReports:
         }
       });
       
-      await new Promise((resolve) => setTimeout(resolve, 2000));
+      await new Promise((resolve) => setTimeout(resolve, 3000));
+      
+      // Metode 2: Prøv å finne og klikke på alle år-lenker (f.eks. "2024", "2023", etc.)
+      await page.evaluate(() => {
+        const allLinks = Array.from(document.querySelectorAll('a, button'));
+        const currentYear = new Date().getFullYear();
+        
+        for (const link of allLinks) {
+          const text = link.textContent?.trim() || '';
+          const yearMatch = text.match(/^(20\d{2}|19\d{2})$/);
+          
+          if (yearMatch) {
+            const year = parseInt(yearMatch[0], 10);
+            // Klikk på år mellom 2000 og i år
+            if (year >= 2000 && year <= currentYear) {
+              try {
+                (link as HTMLElement).click();
+              } catch (e) {
+                // Ignore
+              }
+            }
+          }
+        }
+      });
+      
+      await new Promise((resolve) => setTimeout(resolve, 3000));
       
       // Metode 2: Prøv å finne og klikke på alle ekspanderbare elementer
       const expandableElements = await page.evaluate(() => {
@@ -546,18 +589,6 @@ async function extractPdfLinksFromVirksomhetPage(orgnr: string, existingReports:
     
     // Vent lenger for at dynamisk innhold skal laste
     await new Promise((resolve) => setTimeout(resolve, 3000));
-    
-    // Prøv å fange opp PDF-lenker fra nettverksforespørsler
-    const networkPdfUrls: string[] = [];
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    page.on('response', (response: any) => {
-      const url = response.url();
-      const contentType = response.headers()['content-type'] || '';
-      if (url.includes('.pdf') || contentType.includes('application/pdf')) {
-        networkPdfUrls.push(url);
-        console.log(`[${orgnr}] Fant PDF i nettverksforespørsel: ${url.substring(0, 100)}...`);
-      }
-    });
     
     // Scroll ned på siden for å trigge lazy-loading
     await page.evaluate(() => {

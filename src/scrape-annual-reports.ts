@@ -1,4 +1,5 @@
 import dotenv from 'dotenv';
+import * as cheerio from 'cheerio';
 
 import { createPostgresClient, getPostgresEnvConfig } from './postgres';
 import { fetchRegnskapApiEntries } from './regnskap-api';
@@ -136,6 +137,157 @@ async function fetchAnnualReports(orgnr: string): Promise<AnnualReport[]> {
   return [];
 }
 
+// Hent årsregnskap fra nettsiden ved å parse HTML og finne JSON-data
+async function extractFromWebsite(orgnr: string, axios: any): Promise<Array<{ year: number; documents: Array<Record<string, unknown>>; raw: Record<string, unknown> }>> {
+  const entries: Array<{ year: number; documents: Array<Record<string, unknown>>; raw: Record<string, unknown> }> = [];
+  
+  try {
+    // Gå til virksomhetssiden
+    const url = `https://www.brreg.no/oppslag/virksomheter/${orgnr}`;
+    const response = await axios.get(url, {
+      headers: {
+        'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+      },
+      timeout: 15000,
+    });
+    
+    const html = response.data;
+    const $ = cheerio.load(html);
+    
+    // Prøv å finne JSON-data i script-tags
+    const scriptTags = $('script').toArray();
+    for (const script of scriptTags) {
+      const content = $(script).html() || '';
+      
+      // Prøv å finne __NEXT_DATA__ eller lignende JSON-struktur
+      if (content.includes('__NEXT_DATA__') || content.includes('aarsregnskap') || content.includes('årsregnskap')) {
+        try {
+          // Prøv å ekstrahere JSON
+          const jsonMatch = content.match(/<script[^>]*>([\s\S]*?)<\/script>/);
+          if (jsonMatch) {
+            const jsonStr = jsonMatch[1].replace(/^[^{]*/, '').replace(/[^}]*$/, '');
+            const data = JSON.parse(jsonStr);
+            
+            // Søk etter årsregnskap i JSON-strukturen
+            const regnskap = findRegnskapInData(data, orgnr);
+            if (regnskap && regnskap.length > 0) {
+              for (const rs of regnskap) {
+                const periode = rs.regnskapsperiode as Record<string, unknown> | undefined;
+                const tilDato = periode?.tilDato as string | undefined;
+                let year: number | null = null;
+                if (tilDato && typeof tilDato === 'string') {
+                  const yearMatch = tilDato.match(/(\d{4})/);
+                  if (yearMatch) {
+                    year = parseInt(yearMatch[1], 10);
+                  }
+                }
+                if (year) {
+                  entries.push({
+                    year,
+                    documents: [],
+                    raw: rs,
+                  });
+                }
+              }
+            }
+          }
+        } catch (e) {
+          // Ignorer JSON-parse-feil
+        }
+      }
+    }
+    
+    // Hvis vi ikke fant JSON-data, prøv å finne lenker til årsregnskap i HTML
+    if (entries.length === 0) {
+      const regnskapLinks = $('a[href*="aarsregnskap"], a[href*="årsregnskap"], a[href*="regnskap"]').toArray();
+      for (const link of regnskapLinks) {
+        const href = $(link).attr('href');
+        const text = $(link).text();
+        // Prøv å ekstrahere år fra link-tekst eller href
+        const yearMatch = (text + ' ' + href).match(/(\d{4})/);
+        if (yearMatch) {
+          const year = parseInt(yearMatch[1], 10);
+          if (year >= 1990 && year <= new Date().getFullYear() + 1) {
+            // Hent regnskap for dette året via API
+            try {
+              const apiUrl = `https://data.brreg.no/regnskapsregisteret/regnskap/${orgnr}?ar=${year}`;
+              const apiResponse = await axios.get(apiUrl, {
+                headers: { Accept: 'application/json' },
+                timeout: 10000,
+                validateStatus: (status: number) => status === 200 || status === 404,
+              });
+              
+              if (apiResponse.status === 200 && apiResponse.data) {
+                const data = Array.isArray(apiResponse.data) ? apiResponse.data : [apiResponse.data];
+                for (const regnskap of data) {
+                  if (regnskap && typeof regnskap === 'object') {
+                    entries.push({
+                      year,
+                      documents: [],
+                      raw: regnskap as Record<string, unknown>,
+                    });
+                  }
+                }
+              }
+            } catch (e) {
+              // Ignorer feil
+            }
+          }
+        }
+      }
+    }
+  } catch (error) {
+    console.warn(`[${orgnr}] Feil ved henting fra nettsiden:`, (error as Error).message);
+  }
+  
+  return entries;
+}
+
+// Hjelpefunksjon for å finne regnskap i JSON-struktur
+function findRegnskapInData(data: unknown, orgnr: string): Array<Record<string, unknown>> {
+  const results: Array<Record<string, unknown>> = [];
+  
+  if (!data || typeof data !== 'object') {
+    return results;
+  }
+  
+  const obj = data as Record<string, unknown>;
+  
+  // Søk etter regnskap-felter
+  if (obj.regnskap && Array.isArray(obj.regnskap)) {
+    return obj.regnskap.filter((r): r is Record<string, unknown> => 
+      typeof r === 'object' && r !== null
+    );
+  }
+  
+  if (obj.aarsregnskap && Array.isArray(obj.aarsregnskap)) {
+    return obj.aarsregnskap.filter((r): r is Record<string, unknown> => 
+      typeof r === 'object' && r !== null
+    );
+  }
+  
+  // Rekursivt søk i nested objekter
+  for (const key in obj) {
+    if (key.toLowerCase().includes('regnskap') || key.toLowerCase().includes('aarsregnskap')) {
+      const value = obj[key];
+      if (Array.isArray(value)) {
+        return value.filter((r): r is Record<string, unknown> => 
+          typeof r === 'object' && r !== null
+        );
+      }
+    }
+    if (typeof obj[key] === 'object' && obj[key] !== null) {
+      const nested = findRegnskapInData(obj[key], orgnr);
+      if (nested.length > 0) {
+        results.push(...nested);
+      }
+    }
+  }
+  
+  return results;
+}
+
 // Alle PDF-relaterte funksjoner er fjernet - vi bruker bare JSON-data fra API-et
 
 async function extractFromRegnskapApi(orgnr: string): Promise<AnnualReport[]> {
@@ -145,6 +297,26 @@ async function extractFromRegnskapApi(orgnr: string): Promise<AnnualReport[]> {
     
     // Importer axios én gang
     const axios = (await import('axios')).default;
+    
+    // Først prøv å hente data fra nettsiden (kan ha flere årsregnskap)
+    console.log(`[${orgnr}] Prøver å hente årsregnskap fra nettsiden...`);
+    try {
+      const websiteEntries = await extractFromWebsite(orgnr, axios);
+      for (const entry of websiteEntries) {
+        const journalNr = entry.raw.journalnr || entry.raw.journalnummer || entry.raw.id;
+        const duplicateKey = `${entry.year}-${journalNr || 'unknown'}`;
+        if (!seenYearJournalPairs.has(duplicateKey)) {
+          seenYearJournalPairs.add(duplicateKey);
+          entries.push(entry);
+          console.log(`[${orgnr}] Fant regnskap for ${entry.year} fra nettsiden (journalnr: ${journalNr})`);
+        }
+      }
+      if (websiteEntries.length > 0) {
+        console.log(`[${orgnr}] Fant ${websiteEntries.length} årsregnskap fra nettsiden`);
+      }
+    } catch (error) {
+      console.log(`[${orgnr}] Kunne ikke hente fra nettsiden:`, (error as Error).message);
+    }
     
     // Først prøv å hente alle regnskap uten år-parameter
     console.log(`[${orgnr}] Prøver å hente alle regnskap uten år-parameter...`);

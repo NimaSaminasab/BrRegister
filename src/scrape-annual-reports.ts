@@ -157,6 +157,15 @@ async function extractFromRegnskapApi(orgnr: string): Promise<AnnualReport[]> {
       });
       
       if (response.status === 200 && response.data) {
+        // Logg hele strukturen for å se om det finnes lenker eller metadata
+        console.log(`[${orgnr}] API-respons struktur:`, {
+          isArray: Array.isArray(response.data),
+          hasRegnskap: !!(response.data as Record<string, unknown>).regnskap,
+          hasLinks: !!(response.data as Record<string, unknown>)._links,
+          hasEmbedded: !!(response.data as Record<string, unknown>)._embedded,
+          topLevelKeys: typeof response.data === 'object' && response.data !== null ? Object.keys(response.data as Record<string, unknown>).slice(0, 20) : [],
+        });
+        
         // Normaliser data til array-format
         const allRegnskap = Array.isArray(response.data) ? response.data : (response.data.regnskap ? response.data.regnskap : [response.data]);
         
@@ -169,6 +178,16 @@ async function extractFromRegnskapApi(orgnr: string): Promise<AnnualReport[]> {
           }
           
           const regnskapObj = regnskap as Record<string, unknown>;
+          
+          // Logg strukturen av første regnskap for debugging
+          if (entries.length === 0) {
+            console.log(`[${orgnr}] Første regnskap struktur:`, {
+              keys: Object.keys(regnskapObj).slice(0, 30),
+              hasLinks: !!(regnskapObj._links || regnskapObj.links),
+              hasVirksomhet: !!regnskapObj.virksomhet,
+              virksomhetKeys: regnskapObj.virksomhet && typeof regnskapObj.virksomhet === 'object' ? Object.keys(regnskapObj.virksomhet as Record<string, unknown>).slice(0, 20) : [],
+            });
+          }
           
           // Hent faktisk år fra regnskapsperiode
           const periode = regnskapObj.regnskapsperiode as Record<string, unknown> | undefined;

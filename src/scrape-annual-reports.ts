@@ -803,7 +803,17 @@ async function extractFromRegnskapApi(orgnr: string): Promise<AnnualReport[]> {
       }
       seenYears.add(entry.year);
 
+      // Logg hva API-et faktisk returnerer
+      console.log(`[${orgnr}] API-entry for ${entry.year}:`, {
+        hasDocuments: !!entry.documents,
+        documentCount: entry.documents?.length || 0,
+        hasRaw: !!entry.raw,
+        rawKeys: entry.raw ? Object.keys(entry.raw).slice(0, 10) : [],
+      });
+      
       const rawDocs = mapApiDocumentsToRaw(entry.documents);
+      console.log(`[${orgnr}] Mapped ${rawDocs.length} dokumenter fra API for ${entry.year}`);
+      
       let documents: AnnualReportDocument[] = [];
       
       // Logg hva API-et faktisk returnerer
@@ -818,6 +828,15 @@ async function extractFromRegnskapApi(orgnr: string): Promise<AnnualReport[]> {
           const docStr = JSON.stringify(firstDoc).toLowerCase();
           if (docStr.includes('pdf') || docStr.includes('download') || docStr.includes('url')) {
             console.log(`[${orgnr}] Dokument inneholder potensielle PDF-lenker:`, JSON.stringify(firstDoc).substring(0, 200));
+          }
+        }
+      } else {
+        console.log(`[${orgnr}] API returnerte ingen dokumenter for ${entry.year}, men har raw-data:`, entry.raw ? 'ja' : 'nei');
+        // Prøv å finne lenker i raw-data
+        if (entry.raw && typeof entry.raw === 'object') {
+          const rawStr = JSON.stringify(entry.raw).toLowerCase();
+          if (rawStr.includes('pdf') || rawStr.includes('download') || rawStr.includes('url')) {
+            console.log(`[${orgnr}] Raw-data inneholder potensielle lenker:`, JSON.stringify(entry.raw).substring(0, 300));
           }
         }
       }

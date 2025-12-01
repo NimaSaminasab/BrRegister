@@ -140,22 +140,93 @@ async function fetchAnnualReports(orgnr: string): Promise<AnnualReport[]> {
 
 async function extractFromRegnskapApi(orgnr: string): Promise<AnnualReport[]> {
   try {
-    // Hent alle årsregnskap ved å prøve hvert år systematisk
-    // Vi bruker en bred årsspenn for å sikre at vi får alle tilgjengelige år
-    const currentYear = new Date().getFullYear();
-    const minYear = 1990; // Start fra 1990
-    const maxYear = currentYear;
-    
     const entries: Array<{ year: number; documents: Array<Record<string, unknown>>; raw: Record<string, unknown> }> = [];
     const seenYearJournalPairs = new Set<string>(); // Kombinasjon av år og journalnummer for å unngå duplikater
-    
-    console.log(`[${orgnr}] Henter årsregnskap for år ${minYear}-${maxYear}...`);
     
     // Importer axios én gang
     const axios = (await import('axios')).default;
     
-    // Prøv å hente regnskap for hvert år fra nåtid tilbake til minYear
-    for (let year = maxYear; year >= minYear; year -= 1) {
+    // Først prøv å hente alle regnskap uten år-parameter
+    console.log(`[${orgnr}] Prøver å hente alle regnskap uten år-parameter...`);
+    try {
+      const url = `https://data.brreg.no/regnskapsregisteret/regnskap/${orgnr}`;
+      const response = await axios.get(url, {
+        headers: { Accept: 'application/json' },
+        timeout: 15000,
+        validateStatus: (status) => status === 200 || status === 404,
+      });
+      
+      if (response.status === 200 && response.data) {
+        // Normaliser data til array-format
+        const allRegnskap = Array.isArray(response.data) ? response.data : (response.data.regnskap ? response.data.regnskap : [response.data]);
+        
+        console.log(`[${orgnr}] Fant ${allRegnskap.length} regnskap uten år-parameter`);
+        
+        // Behandle alle regnskap
+        for (const regnskap of allRegnskap) {
+          if (!regnskap || typeof regnskap !== 'object') {
+            continue;
+          }
+          
+          const regnskapObj = regnskap as Record<string, unknown>;
+          
+          // Hent faktisk år fra regnskapsperiode
+          const periode = regnskapObj.regnskapsperiode as Record<string, unknown> | undefined;
+          const tilDato = periode?.tilDato as string | undefined;
+          const fraDato = periode?.fraDato as string | undefined;
+          
+          let actualYear: number | null = null;
+          if (tilDato && typeof tilDato === 'string') {
+            const yearMatch = tilDato.match(/(\d{4})/);
+            if (yearMatch) {
+              actualYear = parseInt(yearMatch[1], 10);
+            }
+          }
+          if (!actualYear && fraDato && typeof fraDato === 'string') {
+            const yearMatch = fraDato.match(/(\d{4})/);
+            if (yearMatch) {
+              actualYear = parseInt(yearMatch[1], 10);
+            }
+          }
+          
+          if (!actualYear || actualYear < 1990 || actualYear > new Date().getFullYear() + 1) {
+            continue;
+          }
+          
+          const journalNr = regnskapObj.journalnr || regnskapObj.journalnummer || regnskapObj.id;
+          const duplicateKey = `${actualYear}-${journalNr || 'unknown'}`;
+          
+          if (seenYearJournalPairs.has(duplicateKey)) {
+            continue;
+          }
+          seenYearJournalPairs.add(duplicateKey);
+          
+          const documents = (regnskapObj.dokumenter || regnskapObj.documents || []) as Array<Record<string, unknown>>;
+          
+          entries.push({
+            year: actualYear,
+            documents: Array.isArray(documents) ? documents : [],
+            raw: regnskapObj,
+          });
+          
+          console.log(`[${orgnr}] Fant regnskap for ${actualYear} (journalnr: ${journalNr})`);
+        }
+      }
+    } catch (error) {
+      console.log(`[${orgnr}] Kunne ikke hente alle regnskap uten år-parameter, prøver år-for-år...`);
+    }
+    
+    // Hvis vi ikke fikk noen resultater, eller hvis vi vil være sikker på å få alle, prøv år-for-år
+    if (entries.length === 0) {
+      // Hent alle årsregnskap ved å prøve hvert år systematisk
+      const currentYear = new Date().getFullYear();
+      const minYear = 1990; // Start fra 1990
+      const maxYear = currentYear;
+      
+      console.log(`[${orgnr}] Henter årsregnskap for år ${minYear}-${maxYear}...`);
+      
+      // Prøv å hente regnskap for hvert år fra nåtid tilbake til minYear
+      for (let year = maxYear; year >= minYear; year -= 1) {
       try {
         // Hent regnskap for dette året
         const url = `https://data.brreg.no/regnskapsregisteret/regnskap/${orgnr}?ar=${year}`;
@@ -208,12 +279,16 @@ async function extractFromRegnskapApi(orgnr: string): Promise<AnnualReport[]> {
             actualYear = year;
           }
           
-          // Filtrer bort duplikater basert på år + journalnummer
+          // Hent journalnummer for logging
           const journalNr = candidateObj.journalnr || candidateObj.journalnummer || candidateObj.id;
+          
+          // Filtrer bort duplikater basert på år + journalnummer
+          // Men la oss være mer permisive: hvis årene er forskjellige, aksepter begge
           const duplicateKey = `${actualYear}-${journalNr || 'unknown'}`;
           
           if (seenYearJournalPairs.has(duplicateKey)) {
-            continue; // Skip duplikat
+            // Dette er en eksakt duplikat (samme år + samme journalnummer)
+            continue;
           }
           seenYearJournalPairs.add(duplicateKey);
           
@@ -225,6 +300,9 @@ async function extractFromRegnskapApi(orgnr: string): Promise<AnnualReport[]> {
             documents: Array.isArray(documents) ? documents : [],
             raw: candidateObj,
           });
+          
+          // Logg hvert funnet regnskap for debugging
+          console.log(`[${orgnr}] Fant regnskap for ${actualYear} (journalnr: ${journalNr}, requested year: ${year})`);
         }
       } catch (error) {
         // Ignorer feil for individuelle år, fortsett til neste år
@@ -238,8 +316,9 @@ async function extractFromRegnskapApi(orgnr: string): Promise<AnnualReport[]> {
         console.warn(`[${orgnr}] Feil ved henting av regnskap for ${year}:`, (error as Error).message);
       }
     }
+    }
     
-    console.log(`[${orgnr}] Fant ${entries.length} årsregnskap via systematisk år-for-år-henting`);
+    console.log(`[${orgnr}] Fant totalt ${entries.length} årsregnskap`);
     
     if (!entries.length) {
       console.log(`[${orgnr}] Ingen årsregnskap funnet i Regnskapsregisteret API`);
@@ -247,16 +326,24 @@ async function extractFromRegnskapApi(orgnr: string): Promise<AnnualReport[]> {
     }
 
     const reports: AnnualReport[] = [];
-    const processedYears = new Set<number>();
+    const processedYearJournalPairs = new Set<string>();
     
     // Sorter entries etter år (nyeste først)
     entries.sort((a, b) => b.year - a.year);
     
     for (const entry of entries) {
-      if (!entry.year || processedYears.has(entry.year)) {
+      if (!entry.year) {
         continue;
       }
-      processedYears.add(entry.year);
+      
+      // Bruk år + journalnummer for å unngå duplikater, men tillat flere regnskap for samme år hvis journalnummer er forskjellig
+      const journalNr = entry.raw.journalnr || entry.raw.journalnummer || entry.raw.id;
+      const uniqueKey = `${entry.year}-${journalNr || 'unknown'}`;
+      
+      if (processedYearJournalPairs.has(uniqueKey)) {
+        continue; // Skip eksakt duplikat
+      }
+      processedYearJournalPairs.add(uniqueKey);
 
       // Logg hva API-et faktisk returnerer
       console.log(`[${orgnr}] API-entry for ${entry.year}:`, {

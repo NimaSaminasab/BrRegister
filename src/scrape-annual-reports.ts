@@ -806,6 +806,22 @@ async function extractFromRegnskapApi(orgnr: string): Promise<AnnualReport[]> {
       const rawDocs = mapApiDocumentsToRaw(entry.documents);
       let documents: AnnualReportDocument[] = [];
       
+      // Logg hva API-et faktisk returnerer
+      if (entry.documents && entry.documents.length > 0) {
+        console.log(`[${orgnr}] API returnerte ${entry.documents.length} dokumenter for ${entry.year}`);
+        // Logg første dokument for debugging
+        const firstDoc = entry.documents[0];
+        if (firstDoc && typeof firstDoc === 'object') {
+          const docKeys = Object.keys(firstDoc);
+          console.log(`[${orgnr}] Første dokument har nøkler: ${docKeys.join(', ')}`);
+          // Sjekk om det er PDF-lenker i dokumentet
+          const docStr = JSON.stringify(firstDoc).toLowerCase();
+          if (docStr.includes('pdf') || docStr.includes('download') || docStr.includes('url')) {
+            console.log(`[${orgnr}] Dokument inneholder potensielle PDF-lenker:`, JSON.stringify(firstDoc).substring(0, 200));
+          }
+        }
+      }
+      
       if (rawDocs.length > 0) {
         // Hvis vi har PDF-lenker, last dem ned og parse dem
         documents = await buildDocumentsWithPdf(rawDocs, orgnr, entry.year);
@@ -814,6 +830,7 @@ async function extractFromRegnskapApi(orgnr: string): Promise<AnnualReport[]> {
       // Hvis vi ikke har PDF-lenker fra API-et, prøv å konstruere en PDF-URL
       // eller prøv å hente PDF direkte fra Regnskapsregisteret
       if (documents.length === 0 || !documents.some(d => d.url && isLikelyPdfUrl(d.url))) {
+        console.log(`[${orgnr}] Prøver å konstruere PDF-URL for ${entry.year}...`);
         // Prøv å konstruere en mulig PDF-URL basert på organisasjonsnummer og år
         const possiblePdfUrls = [
           `https://data.brreg.no/regnskapsregisteret/regnskap/${orgnr}/${entry.year}.pdf`,
@@ -826,7 +843,7 @@ async function extractFromRegnskapApi(orgnr: string): Promise<AnnualReport[]> {
           try {
             const response = await axios.head(pdfUrl, { timeout: 5000 });
             if (response.status === 200 && response.headers['content-type']?.includes('pdf')) {
-              console.log(`[${orgnr}] Fant PDF-URL for ${entry.year}: ${pdfUrl}`);
+              console.log(`[${orgnr}] ✅ Fant PDF-URL for ${entry.year}: ${pdfUrl}`);
               documents.push({
                 title: `Årsregnskap ${entry.year}`,
                 url: pdfUrl,
@@ -842,7 +859,9 @@ async function extractFromRegnskapApi(orgnr: string): Promise<AnnualReport[]> {
       }
       
       // Hvis vi fortsatt ikke har PDF-lenker, lagre JSON-data som fallback
+      // Men sørg for at vi faktisk lagrer API-dataene vi får
       if (documents.length === 0) {
+        console.log(`[${orgnr}] Ingen PDF-lenker funnet, lagrer JSON-data fra API for ${entry.year}`);
         documents = [{
           title: `Årsregnskap ${entry.year}`,
           url: `https://data.brreg.no/regnskapsregisteret/regnskap/${orgnr}?ar=${entry.year}`,

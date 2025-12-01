@@ -175,7 +175,7 @@ async function main() {
 
 async function fetchOrgNumbers(client: ReturnType<typeof createPostgresClient>): Promise<string[]> {
   const result = await client.query<{ organisasjonsnummer: string }>(
-    'SELECT organisasjonsnummer FROM brreg_companies ORDER BY organisasjonsnummer ASC',
+    'SELECT organisasjonsnummer FROM brreg_companies ORDER BY organisasjonsnummer ASC LIMIT 10',
   );
   return result.rows.map((row) => row.organisasjonsnummer.replace(/\D+/g, '')).filter(Boolean);
 }
@@ -497,13 +497,16 @@ async function extractPdfLinksFromVirksomhetPage(orgnr: string, existingReports:
     
     await new Promise((resolve) => setTimeout(resolve, 2000));
     
-    // Finn PDF-lenker
+    // Finn PDF-lenker - prøv flere metoder
     const pdfLinks = await page.evaluate(() => {
       const links: Array<{ year: number; url: string; text: string }> = [];
       const allLinks = Array.from(document.querySelectorAll<HTMLAnchorElement>('a'));
 
+      console.log(`Totalt antall lenker på siden: ${allLinks.length}`);
+
       for (const link of allLinks) {
         const href = link.getAttribute('href');
+        const linkText = link.textContent?.toLowerCase() || '';
         if (!href) continue;
 
         const normalizedHref = href.trim();
@@ -514,7 +517,14 @@ async function extractPdfLinksFromVirksomhetPage(orgnr: string, existingReports:
           continue;
         }
 
-        if (!lowerHref.includes('.pdf')) {
+        // Sjekk om det er en PDF-lenke - prøv flere måter
+        const isPdf = lowerHref.includes('.pdf') || 
+                      linkText.includes('pdf') ||
+                      linkText.includes('årsregnskap') ||
+                      linkText.includes('innsendt årsregnskap') ||
+                      linkText.includes('regnskap');
+
+        if (!isPdf) {
           continue;
         }
 
@@ -541,6 +551,27 @@ async function extractPdfLinksFromVirksomhetPage(orgnr: string, existingReports:
             ? normalizedHref
             : new URL(normalizedHref, window.location.origin).toString();
           links.push({ year, url: absoluteUrl, text: link.textContent ?? '' });
+        } else {
+          // Hvis vi ikke fant år, men det ser ut som en PDF-lenke, prøv å finne år i nærheten
+          // Sjekk om det er årsregnskap-tekst i nærheten
+          let parent: Element | null = link.parentElement;
+          let searchDepth = 0;
+          while (parent && searchDepth < 10) {
+            const parentText = parent.textContent || '';
+            const yearMatch = parentText.match(/\b(20\d{2}|19\d{2})\b/);
+            if (yearMatch) {
+              const candidateYear = parseInt(yearMatch[1], 10);
+              if (candidateYear >= 2000 && candidateYear <= new Date().getFullYear()) {
+                const absoluteUrl = normalizedHref.startsWith('http')
+                  ? normalizedHref
+                  : new URL(normalizedHref, window.location.origin).toString();
+                links.push({ year: candidateYear, url: absoluteUrl, text: link.textContent ?? '' });
+                break;
+              }
+            }
+            parent = parent.parentElement;
+            searchDepth++;
+          }
         }
       }
 
@@ -548,6 +579,9 @@ async function extractPdfLinksFromVirksomhetPage(orgnr: string, existingReports:
     });
     
     console.log(`[${orgnr}] Fant ${pdfLinks.length} PDF-lenker på virksomhetssiden`);
+    if (pdfLinks.length > 0) {
+      console.log(`[${orgnr}] PDF-lenker funnet:`, pdfLinks.map((l: { year: number; url: string; text: string }) => `${l.year}: ${l.url.substring(0, 80)}...`).join(', '));
+    }
     
     await browser.close();
     

@@ -484,22 +484,57 @@ async function extractPdfLinksFromVirksomhetPage(orgnr: string, existingReports:
     await page.goto(url, { waitUntil: 'networkidle2', timeout: 60000 });
     await new Promise((resolve) => setTimeout(resolve, 2000));
     
-    // Prøv å ekspandere årsregnskap-seksjon
+    // Prøv å ekspandere årsregnskap-seksjon - prøv flere metoder
+    console.log(`[${orgnr}] Prøver å ekspandere årsregnskap-seksjon...`);
     try {
+      // Metode 1: Søk etter knapper/lenker med årsregnskap-tekst
       const buttons = await page.$x("//button[contains(translate(text(), 'Å', 'å'), 'årsregnskap')] | //a[contains(translate(text(), 'Å', 'å'), 'årsregnskap')] | //div[@role='button' and contains(translate(text(), 'Å', 'å'), 'årsregnskap')]");
       for (const button of buttons) {
         try {
           await button.click();
-          await new Promise((resolve) => setTimeout(resolve, 1000));
+          await new Promise((resolve) => setTimeout(resolve, 1500));
+        } catch (e) {
+          // Ignore
+        }
+      }
+      
+      // Metode 2: Prøv å finne og klikke på alle ekspanderbare elementer i nærheten av "årsregnskap"
+      const expandableElements = await page.evaluate(() => {
+        const elements: Array<{ selector: string; text: string }> = [];
+        const allElements = Array.from(document.querySelectorAll('button, [role="button"], .accordion, .collapse, [aria-expanded]'));
+        for (const el of allElements) {
+          const text = el.textContent?.toLowerCase() || '';
+          if (text.includes('årsregnskap') || text.includes('arsregnskap') || text.includes('regnskap')) {
+            const tagName = el.tagName.toLowerCase();
+            const className = el.className || '';
+            const id = el.id || '';
+            let selector = tagName;
+            if (id) selector += `#${id}`;
+            if (className) selector += `.${className.split(' ')[0]}`;
+            elements.push({ selector, text: el.textContent?.substring(0, 50) || '' });
+          }
+        }
+        return elements;
+      });
+      
+      for (const elem of expandableElements) {
+        try {
+          const element = await page.$(elem.selector);
+          if (element) {
+            await element.click();
+            await new Promise((resolve) => setTimeout(resolve, 1500));
+            console.log(`[${orgnr}] Klikket på element: ${elem.selector.substring(0, 50)}`);
+          }
         } catch (e) {
           // Ignore
         }
       }
     } catch (error) {
-      // Ignore
+      console.warn(`[${orgnr}] Feil ved ekspandering av årsregnskap-seksjon:`, (error as Error).message);
     }
     
-    await new Promise((resolve) => setTimeout(resolve, 2000));
+    // Vent lenger for at dynamisk innhold skal laste
+    await new Promise((resolve) => setTimeout(resolve, 3000));
     
     // Finn PDF-lenker - prøv flere metoder
     const pdfLinks = await page.evaluate(() => {

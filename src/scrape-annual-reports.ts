@@ -216,17 +216,20 @@ async function extractFromRegnskapApi(orgnr: string): Promise<AnnualReport[]> {
       console.log(`[${orgnr}] Kunne ikke hente alle regnskap uten år-parameter, prøver år-for-år...`);
     }
     
-    // Hvis vi ikke fikk noen resultater, eller hvis vi vil være sikker på å få alle, prøv år-for-år
-    if (entries.length === 0) {
-      // Hent alle årsregnskap ved å prøve hvert år systematisk
-      const currentYear = new Date().getFullYear();
-      const minYear = 1990; // Start fra 1990
-      const maxYear = currentYear;
-      
-      console.log(`[${orgnr}] Henter årsregnskap for år ${minYear}-${maxYear}...`);
-      
-      // Prøv å hente regnskap for hvert år fra nåtid tilbake til minYear
-      for (let year = maxYear; year >= minYear; year -= 1) {
+    // API-et returnerer ofte bare det nyeste regnskapet uten år-parameter
+    // Derfor prøver vi alltid også år-for-år for å sikre at vi får alle tilgjengelige årsregnskap
+    // Vi fortsetter selv om vi allerede har noen resultater
+    console.log(`[${orgnr}] Prøver også år-for-år-henting for å finne alle tilgjengelige årsregnskap...`);
+    
+    // Hent alle årsregnskap ved å prøve hvert år systematisk
+    const currentYear = new Date().getFullYear();
+    const minYear = 1990; // Start fra 1990
+    const maxYear = currentYear;
+    
+    console.log(`[${orgnr}] Henter årsregnskap for år ${minYear}-${maxYear}...`);
+    
+    // Prøv å hente regnskap for hvert år fra nåtid tilbake til minYear
+    for (let year = maxYear; year >= minYear; year -= 1) {
       try {
         // Hent regnskap for dette året
         const url = `https://data.brreg.no/regnskapsregisteret/regnskap/${orgnr}?ar=${year}`;
@@ -315,7 +318,6 @@ async function extractFromRegnskapApi(orgnr: string): Promise<AnnualReport[]> {
         // For andre feil, logg men fortsett
         console.warn(`[${orgnr}] Feil ved henting av regnskap for ${year}:`, (error as Error).message);
       }
-    }
     }
     
     console.log(`[${orgnr}] Fant totalt ${entries.length} årsregnskap`);

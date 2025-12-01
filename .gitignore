@@ -5,4 +5,5 @@ cdk.out/
 .DS_Store
 *.log
 .aws-sam/
+temp-pdfs/
 

@@ -2,6 +2,8 @@ import axios from 'axios';
 import { load, CheerioAPI } from 'cheerio';
 import type { Element } from 'cheerio';
 import dotenv from 'dotenv';
+import * as fs from 'fs';
+import * as path from 'path';
 import pdf from 'pdf-parse';
 import puppeteer from 'puppeteer';
 
@@ -58,6 +60,7 @@ const YEARS_TO_KEEP = 5;
 const USER_AGENT = 'br-register-annual-report-scraper/1.0 (+https://github.com/NimaSaminasab/BrRegister)';
 const YEAR_REGEX = /^(19|20)\d{2}$/;
 const STATEMENT_YEAR_FIELDS = ['year', 'år', 'aar', 'ar', 'reportingYear', 'statementYear', 'arsregnskapAar'];
+const PDF_TEMP_DIR = path.join(__dirname, '../temp-pdfs');
 
 function isPlaceholderUrl(url?: string | null): boolean {
   if (!url) {
@@ -104,6 +107,11 @@ function isLikelyPdfUrl(rawUrl?: string | null): boolean {
 }
 
 async function main() {
+  // Opprett temp-mappe for PDF-filer hvis den ikke eksisterer
+  if (!fs.existsSync(PDF_TEMP_DIR)) {
+    fs.mkdirSync(PDF_TEMP_DIR, { recursive: true });
+  }
+
   const orgArgs = process.argv.slice(2).map((value) => value.replace(/\D+/g, '')).filter(Boolean);
   const postgresConfig = getPostgresEnvConfig();
   const client = createPostgresClient(postgresConfig);
@@ -139,6 +147,29 @@ async function main() {
   }
 
   await client.end();
+  
+  // Rydd opp eventuelle gjenværende PDF-filer i temp-mappen
+  try {
+    const remainingFiles = fs.readdirSync(PDF_TEMP_DIR);
+    for (const file of remainingFiles) {
+      const filePath = path.join(PDF_TEMP_DIR, file);
+      try {
+        fs.unlinkSync(filePath);
+        console.log(`Slettet gjenværende fil: ${file}`);
+      } catch (error) {
+        console.warn(`Klarte ikke å slette ${file}:`, (error as Error).message);
+      }
+    }
+    // Prøv å slette mappen hvis den er tom
+    try {
+      fs.rmdirSync(PDF_TEMP_DIR);
+    } catch {
+      // Ignorer hvis mappen ikke er tom eller ikke kan slettes
+    }
+  } catch (error) {
+    // Ignorer feil ved opprydding
+  }
+
   console.log('✅ Ferdig med scraping av årsregnskap');
 }
 
@@ -181,17 +212,41 @@ async function upsertAnnualReport(
 async function fetchAnnualReports(orgnr: string): Promise<AnnualReport[]> {
   const apiReports = await extractFromRegnskapApi(orgnr);
   
-  // Hvis vi har API-data, prøv også å hente PDF-lenker fra virksomhetssiden
+  // Hvis vi har API-data, prøv alltid å hente PDF-lenker fra virksomhetssiden
+  // Dette sikrer at vi får PDF-lenker selv om API-et ikke gir dem direkte
   if (apiReports.length) {
-    console.log(`[${orgnr}] Fant ${apiReports.length} årsregnskap via Regnskapsregisteret API, søker etter PDF-lenker...`);
+    console.log(`[${orgnr}] Fant ${apiReports.length} årsregnskap via Regnskapsregisteret API, søker etter PDF-lenker fra virksomhetssiden...`);
     
-    // Prøv å hente PDF-lenker fra virksomhetssiden og legge dem til eksisterende rapporter
-    const pdfReports = await extractPdfLinksFromVirksomhetPage(orgnr, apiReports);
-    if (pdfReports.length > 0) {
-      console.log(`[${orgnr}] Fant ${pdfReports.length} PDF-lenker fra virksomhetssiden`);
-      return pdfReports;
+    // Sjekk først om API-rapportene allerede har PDF-lenker som er lastet ned
+    const hasPdfData = apiReports.some(report => 
+      report.data.documents?.some(doc => doc.pdfText || (doc.url && isLikelyPdfUrl(doc.url) && doc.pdfText))
+    );
+    
+    if (!hasPdfData) {
+      // Prøv å hente PDF-lenker fra virksomhetssiden og legge dem til eksisterende rapporter
+      try {
+        const pdfReports = await extractPdfLinksFromVirksomhetPage(orgnr, apiReports);
+        if (pdfReports.length > 0) {
+          // Sjekk om vi faktisk fikk PDF-lenker
+          const hasPdfLinks = pdfReports.some(report => 
+            report.data.documents?.some(doc => doc.url && isLikelyPdfUrl(doc.url))
+          );
+          
+          if (hasPdfLinks) {
+            console.log(`[${orgnr}] Fant PDF-lenker fra virksomhetssiden, laster ned...`);
+            return pdfReports;
+          }
+        }
+      } catch (error) {
+        console.warn(`[${orgnr}] Feil ved henting av PDF-lenker fra virksomhetssiden:`, (error as Error).message);
+      }
+    } else {
+      console.log(`[${orgnr}] API-rapporter har allerede PDF-data, bruker dem`);
+      return apiReports;
     }
     
+    // Hvis vi ikke fant PDF-lenker, returner API-rapportene uansett
+    console.log(`[${orgnr}] Ingen PDF-lenker funnet på virksomhetssiden, bruker API-data`);
     return apiReports;
   }
 
@@ -492,6 +547,8 @@ async function extractPdfLinksFromVirksomhetPage(orgnr: string, existingReports:
       return links;
     });
     
+    console.log(`[${orgnr}] Fant ${pdfLinks.length} PDF-lenker på virksomhetssiden`);
+    
     await browser.close();
     
     // Kombiner eksisterende rapporter med PDF-lenker
@@ -537,6 +594,14 @@ async function extractPdfLinksFromVirksomhetPage(orgnr: string, existingReports:
     }
     
     const reports = Array.from(reportsMap.values());
+    
+    // Logg hvor mange PDF-lenker vi fant
+    const totalPdfLinks = reports.reduce((sum, report) => 
+      sum + (report.data.documents?.filter(d => d.url && isLikelyPdfUrl(d.url)).length || 0), 0
+    );
+    if (totalPdfLinks > 0) {
+      console.log(`[${orgnr}] Fant ${totalPdfLinks} PDF-lenker totalt, laster ned og parser...`);
+    }
     
     // Last ned og parse PDF-ene
     await enrichReportsWithPdfData(reports, orgnr);
@@ -628,6 +693,15 @@ async function extractFromRegnskapApi(orgnr: string): Promise<AnnualReport[]> {
     if (reports.length > 0) {
       const years = reports.map(r => r.year).join(', ');
       console.log(`[${orgnr}] Fant ${reports.length} årsregnskap via Regnskapsregisteret API (år: ${years})`);
+      
+      // Sjekk om noen av rapporterne har PDF-lenker
+      const hasPdfLinks = reports.some(report => 
+        report.data.documents?.some(doc => doc.url && isLikelyPdfUrl(doc.url))
+      );
+      
+      if (!hasPdfLinks) {
+        console.log(`[${orgnr}] API-rapporter har ingen PDF-lenker, vil søke på virksomhetssiden...`);
+      }
     }
 
     return dedupeReports(reports);
@@ -883,7 +957,7 @@ async function buildDocumentsWithPdf(
     };
 
     try {
-      const pdfData = await downloadAndParsePdf(normalizedUrl);
+      const pdfData = await downloadAndParsePdf(normalizedUrl, orgnr, year);
       normalizedDoc.pdfText = pdfData.text;
       normalizedDoc.pdfNumPages = pdfData.numPages;
       normalizedDoc.pdfInfo = pdfData.info;
@@ -901,21 +975,63 @@ function extractDocumentUrl(doc: RawFinancialDocument): string | null {
   return doc.url ?? doc.href ?? doc.link ?? doc.downloadUrl ?? null;
 }
 
-async function downloadAndParsePdf(url: string): Promise<{ text: string; numPages: number; info: Record<string, unknown> }> {
-  const response = await axios.get<ArrayBuffer>(url, {
-    headers: { 'User-Agent': USER_AGENT, Accept: 'application/pdf' },
-    responseType: 'arraybuffer',
-    timeout: 30000,
-  });
+async function downloadAndParsePdf(url: string, orgnr?: string, year?: number): Promise<{ text: string; numPages: number; info: Record<string, unknown> }> {
+  // Opprett temp-mappe hvis den ikke eksisterer
+  if (!fs.existsSync(PDF_TEMP_DIR)) {
+    fs.mkdirSync(PDF_TEMP_DIR, { recursive: true });
+  }
 
-  const buffer = Buffer.from(response.data);
-  const parsed = await pdf(buffer);
+  // Generer unikt filnavn basert på URL, orgnr og år
+  const urlHash = Buffer.from(url).toString('base64').replace(/[/+=]/g, '').substring(0, 20);
+  const filename = orgnr && year 
+    ? `${orgnr}-${year}-${urlHash}.pdf`
+    : `${urlHash}.pdf`;
+  const filePath = path.join(PDF_TEMP_DIR, filename);
 
-  return {
-    text: parsed.text?.trim() ?? '',
-    numPages: parsed.numpages ?? 0,
-    info: parsed.info ? (parsed.info as Record<string, unknown>) : {},
-  };
+  try {
+    // Last ned PDF til disk
+    const response = await axios.get<ArrayBuffer>(url, {
+      headers: { 'User-Agent': USER_AGENT, Accept: 'application/pdf' },
+      responseType: 'arraybuffer',
+      timeout: 30000,
+    });
+
+    const buffer = Buffer.from(response.data);
+    
+    // Lagre PDF til disk
+    fs.writeFileSync(filePath, buffer);
+    console.log(`[${orgnr || 'unknown'}] Lagret PDF til disk: ${filename}`);
+
+    // Les PDF fra disk og parse
+    const fileBuffer = fs.readFileSync(filePath);
+    const parsed = await pdf(fileBuffer);
+
+    const result = {
+      text: parsed.text?.trim() ?? '',
+      numPages: parsed.numpages ?? 0,
+      info: parsed.info ? (parsed.info as Record<string, unknown>) : {},
+    };
+
+    // Slett PDF-filen etter parsing
+    try {
+      fs.unlinkSync(filePath);
+      console.log(`[${orgnr || 'unknown'}] Slettet PDF-fil: ${filename}`);
+    } catch (deleteError) {
+      console.warn(`[${orgnr || 'unknown'}] Klarte ikke å slette PDF-fil ${filename}:`, (deleteError as Error).message);
+    }
+
+    return result;
+  } catch (error) {
+    // Sørg for at filen slettes selv ved feil
+    if (fs.existsSync(filePath)) {
+      try {
+        fs.unlinkSync(filePath);
+      } catch (deleteError) {
+        // Ignorer feil ved sletting
+      }
+    }
+    throw error;
+  }
 }
 
 async function enrichReportsWithPdfData(reports: AnnualReport[], orgnr: string): Promise<void> {
@@ -926,10 +1042,12 @@ async function enrichReportsWithPdfData(reports: AnnualReport[], orgnr: string):
       }
 
       try {
-        const pdfData = await downloadAndParsePdf(document.url);
+        console.log(`[${orgnr}] Laster ned PDF for ${report.year}: ${document.url.substring(0, 100)}...`);
+        const pdfData = await downloadAndParsePdf(document.url, orgnr, report.year);
         document.pdfText = pdfData.text;
         document.pdfNumPages = pdfData.numPages;
         document.pdfInfo = pdfData.info;
+        console.log(`[${orgnr}] ✅ Lastet ned og parsert PDF for ${report.year} (${pdfData.numPages} sider, ${pdfData.text.length} tegn)`);
       } catch (error) {
         console.warn(`[${orgnr}] Klarte ikke å laste ned PDF for ${report.year} (${document.title}):`, (error as Error).message);
       }

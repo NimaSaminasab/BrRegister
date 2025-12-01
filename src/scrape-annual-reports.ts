@@ -487,30 +487,41 @@ async function extractPdfLinksFromVirksomhetPage(orgnr: string, existingReports:
     // Prøv å ekspandere årsregnskap-seksjon - prøv flere metoder
     console.log(`[${orgnr}] Prøver å ekspandere årsregnskap-seksjon...`);
     try {
-      // Metode 1: Søk etter knapper/lenker med årsregnskap-tekst
-      const buttons = await page.$x("//button[contains(translate(text(), 'Å', 'å'), 'årsregnskap')] | //a[contains(translate(text(), 'Å', 'å'), 'årsregnskap')] | //div[@role='button' and contains(translate(text(), 'Å', 'å'), 'årsregnskap')]");
-      for (const button of buttons) {
-        try {
-          await button.click();
-          await new Promise((resolve) => setTimeout(resolve, 1500));
-        } catch (e) {
-          // Ignore
+      // Metode 1: Bruk evaluate for å finne og klikke på elementer med årsregnskap-tekst
+      await page.evaluate(() => {
+        // Finn alle klikkbare elementer
+        const allClickable = Array.from(document.querySelectorAll('button, [role="button"], a, .accordion, .collapse, [aria-expanded], [data-toggle="collapse"]'));
+        
+        for (const el of allClickable) {
+          const text = el.textContent?.toLowerCase() || '';
+          if (text.includes('årsregnskap') || text.includes('arsregnskap') || text.includes('regnskap')) {
+            try {
+              (el as HTMLElement).click();
+            } catch (e) {
+              // Ignore click errors
+            }
+          }
         }
-      }
+      });
       
-      // Metode 2: Prøv å finne og klikke på alle ekspanderbare elementer i nærheten av "årsregnskap"
+      await new Promise((resolve) => setTimeout(resolve, 2000));
+      
+      // Metode 2: Prøv å finne og klikke på alle ekspanderbare elementer
       const expandableElements = await page.evaluate(() => {
         const elements: Array<{ selector: string; text: string }> = [];
-        const allElements = Array.from(document.querySelectorAll('button, [role="button"], .accordion, .collapse, [aria-expanded]'));
+        const allElements = Array.from(document.querySelectorAll('button, [role="button"], .accordion, .collapse, [aria-expanded], [data-toggle="collapse"]'));
         for (const el of allElements) {
           const text = el.textContent?.toLowerCase() || '';
           if (text.includes('årsregnskap') || text.includes('arsregnskap') || text.includes('regnskap')) {
             const tagName = el.tagName.toLowerCase();
-            const className = el.className || '';
+            const className = (el.className && typeof el.className === 'string') ? el.className : '';
             const id = el.id || '';
             let selector = tagName;
             if (id) selector += `#${id}`;
-            if (className) selector += `.${className.split(' ')[0]}`;
+            if (className) {
+              const firstClass = className.split(' ')[0];
+              if (firstClass) selector += `.${firstClass}`;
+            }
             elements.push({ selector, text: el.textContent?.substring(0, 50) || '' });
           }
         }

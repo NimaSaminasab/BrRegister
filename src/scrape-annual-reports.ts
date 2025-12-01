@@ -140,38 +140,95 @@ async function fetchAnnualReports(orgnr: string): Promise<AnnualReport[]> {
 
 async function extractFromRegnskapApi(orgnr: string): Promise<AnnualReport[]> {
   try {
-    // Hent alle tilgjengelige årsregnskap (ingen maxResults-begrensning)
-    let entries = await fetchRegnskapApiEntries(orgnr, 999);
+    // Først prøv å hente alle regnskap uten år-parameter (dette gir ofte flere resultater)
+    const { fetchAllRegnskapForOrg } = await import('./regnskap-bulk');
+    const allRegnskap = await fetchAllRegnskapForOrg(orgnr);
     
-    // Hvis vi bare fikk ett regnskap, prøv alternative metoder
-    if (entries.length <= 1) {
-      console.log(`[${orgnr}] Prøver alternative metoder for å finne flere årsregnskap...`);
+    const entries: Array<{ year: number; documents: Array<Record<string, unknown>>; raw: Record<string, unknown> }> = [];
+    const seenYears = new Set<number>();
+    const seenJournalNumbers = new Set<string | number>();
+    
+    // Behandle alle regnskap fra bulk-endepunktet
+    for (const regnskap of allRegnskap) {
+      if (typeof regnskap !== 'object' || regnskap === null) {
+        continue;
+      }
       
-      // Prøv å hente uten år-parameter
-      const { fetchAllRegnskapForOrg } = await import('./regnskap-bulk');
-      const allRegnskap = await fetchAllRegnskapForOrg(orgnr);
+      const regnskapObj = regnskap as Record<string, unknown>;
       
-      if (allRegnskap.length > entries.length) {
-        // Konverter til RegnskapApiEntry-format
-        const additionalEntries: Array<{ year: number; documents: Array<Record<string, unknown>>; raw: Record<string, unknown> }> = [];
-        for (const regnskap of allRegnskap) {
-          if (typeof regnskap === 'object' && regnskap !== null) {
-            const regnskapObj = regnskap as Record<string, unknown>;
-            const periode = regnskapObj.regnskapsperiode as Record<string, unknown> | undefined;
-            const tilDato = periode?.tilDato as string | undefined;
-            const year = tilDato ? parseInt(tilDato.substring(0, 4), 10) : null;
-            
-            if (year && !entries.some(e => e.year === year)) {
-              additionalEntries.push({
-                year,
-                documents: [],
-                raw: regnskapObj,
-              });
+      // Hent år fra regnskapsperiode
+      const periode = regnskapObj.regnskapsperiode as Record<string, unknown> | undefined;
+      const tilDato = periode?.tilDato as string | undefined;
+      const fraDato = periode?.fraDato as string | undefined;
+      
+      // Prøv å ekstrahere år fra tilDato eller fraDato
+      let year: number | null = null;
+      if (tilDato && typeof tilDato === 'string') {
+        const yearMatch = tilDato.match(/(\d{4})/);
+        if (yearMatch) {
+          year = parseInt(yearMatch[1], 10);
+        }
+      }
+      if (!year && fraDato && typeof fraDato === 'string') {
+        const yearMatch = fraDato.match(/(\d{4})/);
+        if (yearMatch) {
+          year = parseInt(yearMatch[1], 10);
+        }
+      }
+      
+      // Hvis vi ikke fant år fra periode, prøv å hente fra andre felter
+      if (!year) {
+        const yearKeys = ['regnskapsår', 'regnskapsar', 'regnskapsYear', 'år', 'ar', 'regnskapsAar'];
+        for (const key of yearKeys) {
+          const value = regnskapObj[key];
+          if (typeof value === 'number') {
+            year = value;
+            break;
+          }
+          if (typeof value === 'string') {
+            const yearMatch = value.match(/(\d{4})/);
+            if (yearMatch) {
+              year = parseInt(yearMatch[1], 10);
+              break;
             }
           }
         }
-        entries = [...entries, ...additionalEntries];
       }
+      
+      if (!year || year < 1990 || year > new Date().getFullYear() + 1) {
+        continue;
+      }
+      
+      // Filtrer bort duplikater basert på år og journalnummer
+      const journalNrRaw = regnskapObj.journalnr || regnskapObj.journalnummer || regnskapObj.id;
+      const journalNr = (typeof journalNrRaw === 'string' || typeof journalNrRaw === 'number') ? journalNrRaw : null;
+      
+      if (seenYears.has(year) && journalNr && seenJournalNumbers.has(journalNr)) {
+        continue; // Skip duplikat
+      }
+      
+      seenYears.add(year);
+      if (journalNr !== null) {
+        seenJournalNumbers.add(journalNr);
+      }
+      
+      // Hent dokumenter fra regnskapet
+      const documents = (regnskapObj.dokumenter || regnskapObj.documents || []) as Array<Record<string, unknown>>;
+      
+      entries.push({
+        year,
+        documents: Array.isArray(documents) ? documents : [],
+        raw: regnskapObj,
+      });
+    }
+    
+    // Hvis bulk-endepunktet ikke ga resultater, prøv å hente via år-for-år
+    if (entries.length === 0) {
+      console.log(`[${orgnr}] Bulk-endepunkt ga ingen resultater, prøver år-for-år...`);
+      const yearByYearEntries = await fetchRegnskapApiEntries(orgnr, 999);
+      entries.push(...yearByYearEntries);
+    } else {
+      console.log(`[${orgnr}] Fant ${entries.length} regnskap via bulk-endepunkt`);
     }
     
     if (!entries.length) {
@@ -180,13 +237,16 @@ async function extractFromRegnskapApi(orgnr: string): Promise<AnnualReport[]> {
     }
 
     const reports: AnnualReport[] = [];
-    const seenYears = new Set<number>();
+    const processedYears = new Set<number>();
+    
+    // Sorter entries etter år (nyeste først)
+    entries.sort((a, b) => b.year - a.year);
     
     for (const entry of entries) {
-      if (!entry.year || seenYears.has(entry.year)) {
+      if (!entry.year || processedYears.has(entry.year)) {
         continue;
       }
-      seenYears.add(entry.year);
+      processedYears.add(entry.year);
 
       // Logg hva API-et faktisk returnerer
       console.log(`[${orgnr}] API-entry for ${entry.year}:`, {

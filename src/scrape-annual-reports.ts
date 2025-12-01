@@ -547,6 +547,30 @@ async function extractPdfLinksFromVirksomhetPage(orgnr: string, existingReports:
     // Vent lenger for at dynamisk innhold skal laste
     await new Promise((resolve) => setTimeout(resolve, 3000));
     
+    // Prøv å fange opp PDF-lenker fra nettverksforespørsler
+    const networkPdfUrls: string[] = [];
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    page.on('response', (response: any) => {
+      const url = response.url();
+      const contentType = response.headers()['content-type'] || '';
+      if (url.includes('.pdf') || contentType.includes('application/pdf')) {
+        networkPdfUrls.push(url);
+        console.log(`[${orgnr}] Fant PDF i nettverksforespørsel: ${url.substring(0, 100)}...`);
+      }
+    });
+    
+    // Scroll ned på siden for å trigge lazy-loading
+    await page.evaluate(() => {
+      window.scrollTo(0, document.body.scrollHeight);
+    });
+    await new Promise((resolve) => setTimeout(resolve, 2000));
+    
+    // Scroll tilbake opp
+    await page.evaluate(() => {
+      window.scrollTo(0, 0);
+    });
+    await new Promise((resolve) => setTimeout(resolve, 1000));
+    
     // Finn PDF-lenker - prøv flere metoder
     const pdfLinks = await page.evaluate(() => {
       const links: Array<{ year: number; url: string; text: string }> = [];
@@ -626,7 +650,23 @@ async function extractPdfLinksFromVirksomhetPage(orgnr: string, existingReports:
     
     const totalLinks = await page.evaluate(() => document.querySelectorAll('a').length);
     console.log(`[${orgnr}] Totalt antall lenker på siden: ${totalLinks}`);
-    console.log(`[${orgnr}] Fant ${pdfLinks.length} PDF-lenker på virksomhetssiden`);
+    console.log(`[${orgnr}] Fant ${pdfLinks.length} PDF-lenker via DOM-søk`);
+    console.log(`[${orgnr}] Fant ${networkPdfUrls.length} PDF-lenker via nettverksforespørsler`);
+    
+    // Legg til PDF-lenker fra nettverksforespørsler
+    for (const pdfUrl of networkPdfUrls) {
+      // Prøv å finne år i URL-en eller fra eksisterende rapporter
+      const yearMatch = pdfUrl.match(/(\d{4})/);
+      const year = yearMatch ? parseInt(yearMatch[1], 10) : null;
+      if (year && year >= 2000 && year <= new Date().getFullYear()) {
+        const existingLink = pdfLinks.find((l: { year: number; url: string; text: string }) => l.url === pdfUrl);
+        if (!existingLink) {
+          pdfLinks.push({ year, url: pdfUrl, text: 'PDF fra nettverksforespørsel' });
+        }
+      }
+    }
+    
+    console.log(`[${orgnr}] Totalt ${pdfLinks.length} PDF-lenker funnet (DOM + nettverk)`);
     if (pdfLinks.length > 0) {
       console.log(`[${orgnr}] PDF-lenker funnet:`, pdfLinks.map((l: { year: number; url: string; text: string }) => `${l.year}: ${l.url.substring(0, 80)}...`).join(', '));
     }

@@ -229,7 +229,14 @@ async function extractFromRegnskapApi(orgnr: string): Promise<AnnualReport[]> {
     console.log(`[${orgnr}] Henter årsregnskap for år ${minYear}-${maxYear}...`);
     
     // Prøv å hente regnskap for hvert år fra nåtid tilbake til minYear
-    for (let year = maxYear; year >= minYear; year -= 1) {
+    // Men start med de siste 10 årene først for å unngå for mange requests
+    const yearsToCheck = [];
+    for (let year = maxYear; year >= Math.max(minYear, maxYear - 10); year -= 1) {
+      yearsToCheck.push(year);
+    }
+    
+    let foundCount = 0;
+    for (const year of yearsToCheck) {
       try {
         // Hent regnskap for dette året
         const url = `https://data.brreg.no/regnskapsregisteret/regnskap/${orgnr}?ar=${year}`;
@@ -240,7 +247,8 @@ async function extractFromRegnskapApi(orgnr: string): Promise<AnnualReport[]> {
         });
         
         if (response.status === 404) {
-          continue; // Ingen regnskap for dette året, fortsett til neste år
+          // Ingen regnskap for dette året
+          continue;
         }
         
         const data = response.data;
@@ -286,11 +294,14 @@ async function extractFromRegnskapApi(orgnr: string): Promise<AnnualReport[]> {
           const journalNr = candidateObj.journalnr || candidateObj.journalnummer || candidateObj.id;
           
           // Filtrer bort duplikater basert på år + journalnummer
-          // Men la oss være mer permisive: hvis årene er forskjellige, aksepter begge
           const duplicateKey = `${actualYear}-${journalNr || 'unknown'}`;
           
           if (seenYearJournalPairs.has(duplicateKey)) {
             // Dette er en eksakt duplikat (samme år + samme journalnummer)
+            // Logg at vi hopper over duplikat
+            if (actualYear !== year) {
+              console.log(`[${orgnr}] Hoppet over duplikat: requested ${year}, fikk ${actualYear} (journalnr: ${journalNr})`);
+            }
             continue;
           }
           seenYearJournalPairs.add(duplicateKey);
@@ -304,6 +315,7 @@ async function extractFromRegnskapApi(orgnr: string): Promise<AnnualReport[]> {
             raw: candidateObj,
           });
           
+          foundCount++;
           // Logg hvert funnet regnskap for debugging
           console.log(`[${orgnr}] Fant regnskap for ${actualYear} (journalnr: ${journalNr}, requested year: ${year})`);
         }
@@ -320,7 +332,7 @@ async function extractFromRegnskapApi(orgnr: string): Promise<AnnualReport[]> {
       }
     }
     
-    console.log(`[${orgnr}] Fant totalt ${entries.length} årsregnskap`);
+    console.log(`[${orgnr}] Fant totalt ${entries.length} årsregnskap (${foundCount} nye fra år-for-år-henting)`);
     
     if (!entries.length) {
       console.log(`[${orgnr}] Ingen årsregnskap funnet i Regnskapsregisteret API`);

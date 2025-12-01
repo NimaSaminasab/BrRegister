@@ -140,96 +140,106 @@ async function fetchAnnualReports(orgnr: string): Promise<AnnualReport[]> {
 
 async function extractFromRegnskapApi(orgnr: string): Promise<AnnualReport[]> {
   try {
-    // Først prøv å hente alle regnskap uten år-parameter (dette gir ofte flere resultater)
-    const { fetchAllRegnskapForOrg } = await import('./regnskap-bulk');
-    const allRegnskap = await fetchAllRegnskapForOrg(orgnr);
+    // Hent alle årsregnskap ved å prøve hvert år systematisk
+    // Vi bruker en bred årsspenn for å sikre at vi får alle tilgjengelige år
+    const currentYear = new Date().getFullYear();
+    const minYear = 1990; // Start fra 1990
+    const maxYear = currentYear;
     
     const entries: Array<{ year: number; documents: Array<Record<string, unknown>>; raw: Record<string, unknown> }> = [];
-    const seenYears = new Set<number>();
-    const seenJournalNumbers = new Set<string | number>();
+    const seenYearJournalPairs = new Set<string>(); // Kombinasjon av år og journalnummer for å unngå duplikater
     
-    // Behandle alle regnskap fra bulk-endepunktet
-    for (const regnskap of allRegnskap) {
-      if (typeof regnskap !== 'object' || regnskap === null) {
-        continue;
-      }
-      
-      const regnskapObj = regnskap as Record<string, unknown>;
-      
-      // Hent år fra regnskapsperiode
-      const periode = regnskapObj.regnskapsperiode as Record<string, unknown> | undefined;
-      const tilDato = periode?.tilDato as string | undefined;
-      const fraDato = periode?.fraDato as string | undefined;
-      
-      // Prøv å ekstrahere år fra tilDato eller fraDato
-      let year: number | null = null;
-      if (tilDato && typeof tilDato === 'string') {
-        const yearMatch = tilDato.match(/(\d{4})/);
-        if (yearMatch) {
-          year = parseInt(yearMatch[1], 10);
+    console.log(`[${orgnr}] Henter årsregnskap for år ${minYear}-${maxYear}...`);
+    
+    // Importer axios én gang
+    const axios = (await import('axios')).default;
+    
+    // Prøv å hente regnskap for hvert år fra nåtid tilbake til minYear
+    for (let year = maxYear; year >= minYear; year -= 1) {
+      try {
+        // Hent regnskap for dette året
+        const url = `https://data.brreg.no/regnskapsregisteret/regnskap/${orgnr}?ar=${year}`;
+        const response = await axios.get(url, {
+          headers: { Accept: 'application/json' },
+          timeout: 10000,
+          validateStatus: (status) => status === 200 || status === 404, // Aksepter både 200 og 404
+        });
+        
+        if (response.status === 404) {
+          continue; // Ingen regnskap for dette året, fortsett til neste år
         }
-      }
-      if (!year && fraDato && typeof fraDato === 'string') {
-        const yearMatch = fraDato.match(/(\d{4})/);
-        if (yearMatch) {
-          year = parseInt(yearMatch[1], 10);
+        
+        const data = response.data;
+        if (!data) {
+          continue;
         }
-      }
-      
-      // Hvis vi ikke fant år fra periode, prøv å hente fra andre felter
-      if (!year) {
-        const yearKeys = ['regnskapsår', 'regnskapsar', 'regnskapsYear', 'år', 'ar', 'regnskapsAar'];
-        for (const key of yearKeys) {
-          const value = regnskapObj[key];
-          if (typeof value === 'number') {
-            year = value;
-            break;
+        
+        // Normaliser data til array-format
+        const candidates = Array.isArray(data) ? data : (data.regnskap ? data.regnskap : [data]);
+        
+        for (const candidate of candidates) {
+          if (!candidate || typeof candidate !== 'object') {
+            continue;
           }
-          if (typeof value === 'string') {
-            const yearMatch = value.match(/(\d{4})/);
+          
+          const candidateObj = candidate as Record<string, unknown>;
+          
+          // Hent faktisk år fra regnskapsperiode
+          const periode = candidateObj.regnskapsperiode as Record<string, unknown> | undefined;
+          const tilDato = periode?.tilDato as string | undefined;
+          const fraDato = periode?.fraDato as string | undefined;
+          
+          let actualYear: number | null = null;
+          if (tilDato && typeof tilDato === 'string') {
+            const yearMatch = tilDato.match(/(\d{4})/);
             if (yearMatch) {
-              year = parseInt(yearMatch[1], 10);
-              break;
+              actualYear = parseInt(yearMatch[1], 10);
             }
           }
+          if (!actualYear && fraDato && typeof fraDato === 'string') {
+            const yearMatch = fraDato.match(/(\d{4})/);
+            if (yearMatch) {
+              actualYear = parseInt(yearMatch[1], 10);
+            }
+          }
+          
+          // Hvis vi ikke fant år fra periode, bruk requested year
+          if (!actualYear) {
+            actualYear = year;
+          }
+          
+          // Filtrer bort duplikater basert på år + journalnummer
+          const journalNr = candidateObj.journalnr || candidateObj.journalnummer || candidateObj.id;
+          const duplicateKey = `${actualYear}-${journalNr || 'unknown'}`;
+          
+          if (seenYearJournalPairs.has(duplicateKey)) {
+            continue; // Skip duplikat
+          }
+          seenYearJournalPairs.add(duplicateKey);
+          
+          // Hent dokumenter
+          const documents = (candidateObj.dokumenter || candidateObj.documents || []) as Array<Record<string, unknown>>;
+          
+          entries.push({
+            year: actualYear,
+            documents: Array.isArray(documents) ? documents : [],
+            raw: candidateObj,
+          });
         }
+      } catch (error) {
+        // Ignorer feil for individuelle år, fortsett til neste år
+        if (axios.isAxiosError(error)) {
+          const status = error.response?.status;
+          if (status === 404) {
+            continue; // Ingen regnskap for dette året
+          }
+        }
+        // For andre feil, logg men fortsett
+        console.warn(`[${orgnr}] Feil ved henting av regnskap for ${year}:`, (error as Error).message);
       }
-      
-      if (!year || year < 1990 || year > new Date().getFullYear() + 1) {
-        continue;
-      }
-      
-      // Filtrer bort duplikater basert på år og journalnummer
-      const journalNrRaw = regnskapObj.journalnr || regnskapObj.journalnummer || regnskapObj.id;
-      const journalNr = (typeof journalNrRaw === 'string' || typeof journalNrRaw === 'number') ? journalNrRaw : null;
-      
-      if (seenYears.has(year) && journalNr && seenJournalNumbers.has(journalNr)) {
-        continue; // Skip duplikat
-      }
-      
-      seenYears.add(year);
-      if (journalNr !== null) {
-        seenJournalNumbers.add(journalNr);
-      }
-      
-      // Hent dokumenter fra regnskapet
-      const documents = (regnskapObj.dokumenter || regnskapObj.documents || []) as Array<Record<string, unknown>>;
-      
-      entries.push({
-        year,
-        documents: Array.isArray(documents) ? documents : [],
-        raw: regnskapObj,
-      });
     }
     
-    // Hvis bulk-endepunktet ikke ga resultater, prøv å hente via år-for-år
-    if (entries.length === 0) {
-      console.log(`[${orgnr}] Bulk-endepunkt ga ingen resultater, prøver år-for-år...`);
-      const yearByYearEntries = await fetchRegnskapApiEntries(orgnr, 999);
-      entries.push(...yearByYearEntries);
-    } else {
-      console.log(`[${orgnr}] Fant ${entries.length} regnskap via bulk-endepunkt`);
-    }
+    console.log(`[${orgnr}] Fant ${entries.length} årsregnskap via systematisk år-for-år-henting`);
     
     if (!entries.length) {
       console.log(`[${orgnr}] Ingen årsregnskap funnet i Regnskapsregisteret API`);

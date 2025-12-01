@@ -465,19 +465,23 @@ async function fetchAnnualReports(orgnr: string): Promise<AnnualReport[]> {
 
 async function extractPdfLinksFromVirksomhetPage(orgnr: string, existingReports: AnnualReport[]): Promise<AnnualReport[]> {
   const url = `${BASE_URL}/${orgnr}`;
-  const browser = await puppeteer.launch({
-    headless: true,
-    args: ['--no-sandbox', '--disable-setuid-sandbox'],
-  });
-
+  let browser;
+  
   try {
+    console.log(`[${orgnr}] Starter Puppeteer for å hente PDF-lenker...`);
+    browser = await puppeteer.launch({
+      headless: true,
+      args: ['--no-sandbox', '--disable-setuid-sandbox', '--disable-dev-shm-usage'],
+    });
+
     const page = await browser.newPage();
     await page.setUserAgent(USER_AGENT);
     await page.setExtraHTTPHeaders({
       'Accept-Language': 'nb-NO,nb;q=0.9',
     });
     
-    await page.goto(url, { waitUntil: 'networkidle2', timeout: 30000 });
+    console.log(`[${orgnr}] Går til ${url}...`);
+    await page.goto(url, { waitUntil: 'networkidle2', timeout: 60000 });
     await new Promise((resolve) => setTimeout(resolve, 2000));
     
     // Prøv å ekspandere årsregnskap-seksjon
@@ -501,8 +505,6 @@ async function extractPdfLinksFromVirksomhetPage(orgnr: string, existingReports:
     const pdfLinks = await page.evaluate(() => {
       const links: Array<{ year: number; url: string; text: string }> = [];
       const allLinks = Array.from(document.querySelectorAll<HTMLAnchorElement>('a'));
-
-      console.log(`Totalt antall lenker på siden: ${allLinks.length}`);
 
       for (const link of allLinks) {
         const href = link.getAttribute('href');
@@ -578,12 +580,16 @@ async function extractPdfLinksFromVirksomhetPage(orgnr: string, existingReports:
       return links;
     });
     
+    const totalLinks = await page.evaluate(() => document.querySelectorAll('a').length);
+    console.log(`[${orgnr}] Totalt antall lenker på siden: ${totalLinks}`);
     console.log(`[${orgnr}] Fant ${pdfLinks.length} PDF-lenker på virksomhetssiden`);
     if (pdfLinks.length > 0) {
       console.log(`[${orgnr}] PDF-lenker funnet:`, pdfLinks.map((l: { year: number; url: string; text: string }) => `${l.year}: ${l.url.substring(0, 80)}...`).join(', '));
     }
     
-    await browser.close();
+    if (browser) {
+      await browser.close();
+    }
     
     // Kombiner eksisterende rapporter med PDF-lenker
     const reportsMap = new Map<number, AnnualReport>();
@@ -642,7 +648,13 @@ async function extractPdfLinksFromVirksomhetPage(orgnr: string, existingReports:
     
     return reports;
   } catch (error) {
-    await browser.close();
+    if (browser) {
+      try {
+        await browser.close();
+      } catch (closeError) {
+        // Ignore close errors
+      }
+    }
     console.warn(`[${orgnr}] Feil ved henting av PDF-lenker fra virksomhetssiden:`, (error as Error).message);
     return existingReports;
   }

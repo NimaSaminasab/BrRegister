@@ -480,14 +480,14 @@ async function extractPdfLinksFromVirksomhetPage(orgnr: string, existingReports:
       'Accept-Language': 'nb-NO,nb;q=0.9',
     });
     
-    console.log(`[${orgnr}] Går til ${url}...`);
-    await page.goto(url, { waitUntil: 'networkidle2', timeout: 60000 });
-    await new Promise((resolve) => setTimeout(resolve, 2000));
+    // Sett opp nedlastingshåndtering for PDF-filer
+    const client = await page.target().createCDPSession();
+    await client.send('Page.setDownloadBehavior', {
+      behavior: 'allow',
+      downloadPath: PDF_TEMP_DIR,
+    });
     
-    // Prøv å ekspandere årsregnskap-seksjon - prøv flere metoder
-    console.log(`[${orgnr}] Prøver å ekspandere årsregnskap-seksjon...`);
-    
-    // Sett opp nettverksmonitorering FØR vi klikker for å fange opp PDF-er
+    // Sett opp nettverksmonitorering FØR vi navigerer for å fange opp PDF-er
     const networkPdfUrls: string[] = [];
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const responseHandler = (response: any) => {
@@ -499,6 +499,13 @@ async function extractPdfLinksFromVirksomhetPage(orgnr: string, existingReports:
       }
     };
     page.on('response', responseHandler);
+    
+    console.log(`[${orgnr}] Går til ${url}...`);
+    await page.goto(url, { waitUntil: 'networkidle2', timeout: 60000 });
+    await new Promise((resolve) => setTimeout(resolve, 2000));
+    
+    // Prøv å ekspandere årsregnskap-seksjon - prøv flere metoder
+    console.log(`[${orgnr}] Prøver å ekspandere årsregnskap-seksjon...`);
     
     try {
       // Metode 1: Bruk evaluate for å finne og klikke på elementer med årsregnskap-tekst
@@ -525,9 +532,10 @@ async function extractPdfLinksFromVirksomhetPage(orgnr: string, existingReports:
       await new Promise((resolve) => setTimeout(resolve, 3000));
       
       // Metode 2: Prøv å finne og klikke på alle år-lenker (f.eks. "2024", "2023", etc.)
-      await page.evaluate(() => {
+      const clickedYears = await page.evaluate(() => {
         const allLinks = Array.from(document.querySelectorAll('a, button'));
         const currentYear = new Date().getFullYear();
+        const clicked: number[] = [];
         
         for (const link of allLinks) {
           const text = link.textContent?.trim() || '';
@@ -539,15 +547,22 @@ async function extractPdfLinksFromVirksomhetPage(orgnr: string, existingReports:
             if (year >= 2000 && year <= currentYear) {
               try {
                 (link as HTMLElement).click();
+                clicked.push(year);
               } catch (e) {
                 // Ignore
               }
             }
           }
         }
+        return clicked;
       });
       
-      await new Promise((resolve) => setTimeout(resolve, 3000));
+      if (clickedYears.length > 0) {
+        console.log(`[${orgnr}] Klikket på år-lenker: ${clickedYears.join(', ')}`);
+        await new Promise((resolve) => setTimeout(resolve, 3000)); // Vent på at PDF-er skal laste
+      } else {
+        console.log(`[${orgnr}] Fant ingen år-lenker å klikke på`);
+      }
       
       // Metode 2: Prøv å finne og klikke på alle ekspanderbare elementer
       const expandableElements = await page.evaluate(() => {

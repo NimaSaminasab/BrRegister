@@ -519,13 +519,11 @@ async function extractPdfLinksFromVirksomhetPage(orgnr: string, existingReports:
           continue;
         }
 
-        // Sjekk om det er en PDF-lenke - prøv flere måter
-        const isPdf = lowerHref.includes('.pdf') || 
-                      linkText.includes('pdf') ||
-                      linkText.includes('årsregnskap') ||
-                      linkText.includes('innsendt årsregnskap') ||
-                      linkText.includes('regnskap');
-
+        // Sjekk om det er en PDF-lenke - kun aksepter faktiske PDF-lenker
+        // Ikke lenker til informasjonssider
+        const isPdf = lowerHref.includes('.pdf');
+        
+        // Hvis det ikke er en direkte PDF-lenke, hopp over
         if (!isPdf) {
           continue;
         }
@@ -602,7 +600,16 @@ async function extractPdfLinksFromVirksomhetPage(orgnr: string, existingReports:
     // Legg til PDF-lenker
     for (const link of pdfLinks) {
       const absoluteUrl = normalizeDocumentUrl(link.url);
-      if (!absoluteUrl || !isLikelyPdfUrl(absoluteUrl)) {
+      if (!absoluteUrl) {
+        continue;
+      }
+      
+      // Hvis URL-en ikke er en direkte PDF-lenke, men ser ut som en årsregnskap-lenke,
+      // prøv å finne PDF-lenker på den siden
+      if (!isLikelyPdfUrl(absoluteUrl)) {
+        // Dette er sannsynligvis en lenke til en informasjonsside, ikke en direkte PDF
+        // Vi kan hoppe over den for nå, eller prøve å følge lenken (men det tar tid)
+        console.log(`[${orgnr}] Hopper over ikke-PDF lenke for ${link.year}: ${absoluteUrl.substring(0, 80)}...`);
         continue;
       }
       

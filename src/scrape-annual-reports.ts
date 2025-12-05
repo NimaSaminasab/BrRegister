@@ -420,28 +420,80 @@ async function extractFromWebsite(orgnr: string, axios: any): Promise<Array<{ ye
     // Prøv å finne journalnummer for hvert år fra HTML-en
     // Pattern: year...YYYY...journalnr...NNNNNNNNN eller journalnr...NNNNNNNNN...year...YYYY
     const yearJournalMap = new Map<number, string>();
-    for (const year of uniqueYears) {
-      // Prøv flere patterns for å finne journalnummer knyttet til år
-      const patterns = [
-        new RegExp(`"year":${year}[^}]*?"journalnr":(\\d{10})`, 'g'),
-        new RegExp(`"journalnr":(\\d{10})[^}]*?"year":${year}`, 'g'),
-        new RegExp(`year[^}]*?${year}[^}]*?journalnr[^}]*?(\\d{10})`, 'g'),
-        new RegExp(`journalnr[^}]*?(\\d{10})[^}]*?year[^}]*?${year}`, 'g'),
-      ];
-      
-      for (const pattern of patterns) {
-        const journalMatches = snippet.matchAll(pattern);
-        for (const journalMatch of journalMatches) {
-          const journalNr = journalMatch[1];
-          if (journalNr && !yearJournalMap.has(year)) {
-            yearJournalMap.set(year, journalNr);
-            console.log(`[${orgnr}] Fant journalnummer ${journalNr} for år ${year} fra HTML`);
-            break;
+    
+    // Prøv å parse hele regnskapsAarResponse som JSON først
+    try {
+      // Finn starten av JSON-objektet
+      const jsonStart = snippet.indexOf('{');
+      if (jsonStart !== -1) {
+        // Prøv å finne slutten av JSON-objektet (kan være komplekst, så vi prøver flere tilnærminger)
+        const jsonEnd = snippet.indexOf('}', jsonStart + 1000);
+        if (jsonEnd !== -1) {
+          const jsonStr = snippet.substring(jsonStart, jsonEnd + 1);
+          try {
+            const parsed = JSON.parse(jsonStr);
+            // Rekursivt søk etter regnskap-objekter
+            const regnskapList: Array<Record<string, unknown>> = [];
+            const findRegnskap = (obj: unknown): void => {
+              if (typeof obj !== 'object' || obj === null) return;
+              if (Array.isArray(obj)) {
+                obj.forEach(findRegnskap);
+                return;
+              }
+              const record = obj as Record<string, unknown>;
+              if (record.journalnr || record.journalnummer || (record.regnskapsperiode && record.year)) {
+                regnskapList.push(record);
+              }
+              Object.values(record).forEach(findRegnskap);
+            };
+            findRegnskap(parsed);
+            
+            for (const rs of regnskapList) {
+              const year = rs.year as number | undefined;
+              const journalNr = (rs.journalnr || rs.journalnummer) as string | number | undefined;
+              if (year && journalNr) {
+                yearJournalMap.set(year, String(journalNr));
+                console.log(`[${orgnr}] Fant journalnummer ${journalNr} for år ${year} fra JSON-parsing`);
+              }
+            }
+          } catch (e) {
+            // Ignorer JSON-parse-feil
           }
         }
-        if (yearJournalMap.has(year)) break;
+      }
+    } catch (e) {
+      // Ignorer feil
+    }
+    
+    // Fallback: Prøv regex-patterns hvis JSON-parsing ikke fungerte
+    if (yearJournalMap.size === 0) {
+      for (const year of uniqueYears) {
+        // Prøv flere patterns for å finne journalnummer knyttet til år
+        const patterns = [
+          new RegExp(`"year":\\s*${year}[^}]*?"journalnr":\\s*"?([0-9]{10})"?,?`, 'g'),
+          new RegExp(`"journalnr":\\s*"?([0-9]{10})"?,?[^}]*?"year":\\s*${year}`, 'g'),
+          new RegExp(`year[^}]*?${year}[^}]*?journalnr[^}]*?([0-9]{10})`, 'g'),
+          new RegExp(`journalnr[^}]*?([0-9]{10})[^}]*?year[^}]*?${year}`, 'g'),
+          new RegExp(`"year":${year}[^}]{0,500}?"journalnr":([0-9]{10})`, 'g'),
+          new RegExp(`"journalnr":([0-9]{10})[^}]{0,500}?"year":${year}`, 'g'),
+        ];
+        
+        for (const pattern of patterns) {
+          const journalMatches = snippet.matchAll(pattern);
+          for (const journalMatch of journalMatches) {
+            const journalNr = journalMatch[1];
+            if (journalNr && !yearJournalMap.has(year)) {
+              yearJournalMap.set(year, journalNr);
+              console.log(`[${orgnr}] Fant journalnummer ${journalNr} for år ${year} fra HTML (regex)`);
+              break;
+            }
+          }
+          if (yearJournalMap.has(year)) break;
+        }
       }
     }
+    
+    console.log(`[${orgnr}] Fant totalt ${yearJournalMap.size} journalnummer fra HTML for ${uniqueYears.length} år`);
     
     if (uniqueYears.length === 0) {
       console.log(`[${orgnr}] Fant ingen år i regnskapsAarResponse`);
@@ -582,7 +634,15 @@ async function extractFromWebsite(orgnr: string, axios: any): Promise<Array<{ ye
                   console.log(`[${orgnr}] Fant regnskap for ${year} via PDF-parsing (journalnr: ${pdfData.journalnr || pdfData.journalnummer || pdfData.id})`);
                   continue; // Hopp til neste år
                 } else {
-                  console.warn(`[${orgnr}] Kunne ikke parse PDF eller hente JSON-data for ${year}`);
+                  // Logg mer detaljert informasjon om hvorfor PDF-parsing feilet
+                  const responsePreview = responseData.toString('utf-8', 0, Math.min(500, responseData.length));
+                  if (responsePreview.includes('error') || responsePreview.includes('Error') || responsePreview.includes('not found')) {
+                    console.warn(`[${orgnr}] PDF-download feilet for ${year}: ${responsePreview.substring(0, 150)}`);
+                  } else if (!responsePreview.includes('%PDF')) {
+                    console.warn(`[${orgnr}] Ingen PDF funnet i respons for ${year} (respons starter med: ${responsePreview.substring(0, 100)})`);
+                  } else {
+                    console.warn(`[${orgnr}] Kunne ikke parse PDF eller hente JSON-data for ${year} (PDF funnet, men parsing feilet)`);
+                  }
                 }
               } catch (pdfError) {
                 console.warn(`[${orgnr}] Feil ved PDF-parsing for ${year}:`, (pdfError as Error).message);

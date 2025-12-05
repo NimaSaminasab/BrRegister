@@ -178,6 +178,52 @@ async function extractFromWebsite(orgnr: string, axios: any): Promise<Array<{ ye
     // Ekstraher en større chunk med data for å finne både år og journalnummer
     const snippet = html.substring(regnskapsAarIdx, regnskapsAarIdx + 50000);
     
+    // Prøv å parse regnskapsAarResponse som JSON først
+    // Format kan være: regnskapsAarResponse = {...} eller "regnskapsAarResponse":{...}
+    let regnskapsAarData: Record<string, unknown> | null = null;
+    try {
+      // Prøv å finne JSON-objektet
+      const jsonMatch = snippet.match(/regnskapsAarResponse[^=]*=\s*({[\s\S]+?});/);
+      if (jsonMatch) {
+        regnskapsAarData = JSON.parse(jsonMatch[1]);
+      } else {
+        // Prøv annen format: "regnskapsAarResponse":{...}
+        const jsonMatch2 = snippet.match(/"regnskapsAarResponse"\s*:\s*({[\s\S]+?})(?:,|\s*})/);
+        if (jsonMatch2) {
+          regnskapsAarData = JSON.parse(jsonMatch2[1]);
+        }
+      }
+    } catch (e) {
+      // Ignorer JSON-parse-feil
+    }
+    
+    // Hvis vi fant JSON-data, prøv å hente regnskap derfra
+    if (regnskapsAarData) {
+      const regnskap = findRegnskapInData(regnskapsAarData, orgnr);
+      if (regnskap && regnskap.length > 0) {
+        for (const rs of regnskap) {
+          const periode = rs.regnskapsperiode as Record<string, unknown> | undefined;
+          const tilDato = periode?.tilDato as string | undefined;
+          let year: number | null = null;
+          if (tilDato && typeof tilDato === 'string') {
+            const yearMatch = tilDato.match(/(\d{4})/);
+            if (yearMatch) {
+              year = parseInt(yearMatch[1], 10);
+            }
+          }
+          if (year) {
+            const documents = (rs.dokumenter || rs.documents || []) as Array<Record<string, unknown>>;
+            entries.push({
+              year,
+              documents: Array.isArray(documents) ? documents : [],
+              raw: rs,
+            });
+            console.log(`[${orgnr}] Fant regnskap for ${year} fra regnskapsAarResponse JSON (journalnr: ${rs.journalnr || rs.journalnummer || rs.id})`);
+          }
+        }
+      }
+    }
+    
     // Finn alle år i snippet (pattern: year...YYYY)
     const yearPattern = /year.{1,10}?(\d{4})/g;
     const matches = snippet.matchAll(yearPattern);

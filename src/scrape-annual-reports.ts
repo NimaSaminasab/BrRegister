@@ -128,10 +128,42 @@ async function downloadAndParsePdf(
         }
       }
       
-      // Prøv å finne journalnummer i PDF-teksten
-      // Format kan være: "journalnr": "1234567890" eller journalnr: 1234567890
-      const journalNrMatch = pdfText.match(/journalnr[":\s]+(\d{10})/i);
-      const journalNr = journalNrMatch ? journalNrMatch[1] : null;
+      // Prøv å finne journalnummer i PDF-teksten med flere patterns
+      // Format kan være: "journalnr": "1234567890", journalnr: 1234567890, Journalnr: 1234567890, etc.
+      const journalNrPatterns = [
+        /journalnr[":\s]+(\d{10})/i,
+        /journalnummer[":\s]+(\d{10})/i,
+        /journal[":\s]+nr[":\s]+(\d{10})/i,
+        /"journalnr"\s*:\s*"?(\d{10})"?/i,
+        /journalnr\s*=\s*(\d{10})/i,
+        /(\d{10})/g, // Prøv å finne alle 10-sifrede tall og sjekk om de ser ut som journalnummer
+      ];
+      
+      let journalNr: string | null = null;
+      for (const pattern of journalNrPatterns) {
+        const match = pdfText.match(pattern);
+        if (match && match[1]) {
+          const candidate = match[1];
+          // Valider at det ser ut som et journalnummer (10 siffer, starter ofte med 2 for nyere år)
+          if (candidate.length === 10 && /^\d{10}$/.test(candidate)) {
+            journalNr = candidate;
+            console.log(`[${orgnr}] Fant journalnummer ${journalNr} i PDF-teksten for ${year}`);
+            break;
+          }
+        }
+      }
+      
+      // Hvis vi ikke fant journalnummer i teksten, prøv å finne det i PDF-metadata
+      if (!journalNr && pdfDoc.info) {
+        const info = pdfDoc.info as Record<string, unknown>;
+        for (const [key, value] of Object.entries(info)) {
+          if (typeof value === 'string' && /^\d{10}$/.test(value)) {
+            journalNr = value;
+            console.log(`[${orgnr}] Fant journalnummer ${journalNr} i PDF-metadata (${key}) for ${year}`);
+            break;
+          }
+        }
+      }
       
       // Slett temp-fil
       fs.unlinkSync(tempPdfPath);
@@ -155,39 +187,49 @@ async function downloadAndParsePdf(
               if (tilDato && typeof tilDato === 'string') {
                 const yearMatch = tilDato.match(/(\d{4})/);
                 if (yearMatch && parseInt(yearMatch[1], 10) === year) {
+                  console.log(`[${orgnr}] Fant regnskap for ${year} via API med journalnummer ${journalNr} fra PDF`);
                   return data as Record<string, unknown>;
                 }
               }
               // Hvis år ikke matcher, returner data uansett (kan være at PDF-en er for et annet år)
+              console.log(`[${orgnr}] Fant regnskap via API med journalnummer ${journalNr} fra PDF, men år matcher ikke (forventet ${year}, fikk ${tilDato})`);
               return data as Record<string, unknown>;
             }
           }
         } catch (apiError) {
-          // Ignorer feil
+          console.warn(`[${orgnr}] Feil ved API-henting med journalnummer ${journalNr} for ${year}:`, (apiError as Error).message);
         }
+      } else {
+        console.warn(`[${orgnr}] Kunne ikke finne journalnummer i PDF-teksten eller metadata for ${year}`);
       }
       
       // Fallback: Prøv å hente via API (uten journalnummer, bare med år)
-      const apiUrl = `https://data.brreg.no/regnskapsregisteret/regnskap/${orgnr}?ar=${year}`;
-      const apiResponse = await axios.get(apiUrl, {
-        headers: { Accept: 'application/json' },
-        timeout: 10000,
-        validateStatus: (status: number) => status === 200 || status === 404,
-      });
-      
-      if (apiResponse.status === 200 && apiResponse.data) {
-        const data = Array.isArray(apiResponse.data) ? apiResponse.data[0] : apiResponse.data;
-        if (data && typeof data === 'object') {
-          // Sjekk om faktisk år matcher
-          const periode = data.regnskapsperiode as Record<string, unknown> | undefined;
-          const tilDato = periode?.tilDato as string | undefined;
-          if (tilDato && typeof tilDato === 'string') {
-            const yearMatch = tilDato.match(/(\d{4})/);
-            if (yearMatch && parseInt(yearMatch[1], 10) === year) {
-              return data as Record<string, unknown>;
+      // Dette fungerer sjelden for eldre år, men verdt å prøve
+      try {
+        const apiUrl = `https://data.brreg.no/regnskapsregisteret/regnskap/${orgnr}?ar=${year}`;
+        const apiResponse = await axios.get(apiUrl, {
+          headers: { Accept: 'application/json' },
+          timeout: 10000,
+          validateStatus: (status: number) => status === 200 || status === 404,
+        });
+        
+        if (apiResponse.status === 200 && apiResponse.data) {
+          const data = Array.isArray(apiResponse.data) ? apiResponse.data[0] : apiResponse.data;
+          if (data && typeof data === 'object') {
+            // Sjekk om faktisk år matcher
+            const periode = data.regnskapsperiode as Record<string, unknown> | undefined;
+            const tilDato = periode?.tilDato as string | undefined;
+            if (tilDato && typeof tilDato === 'string') {
+              const yearMatch = tilDato.match(/(\d{4})/);
+              if (yearMatch && parseInt(yearMatch[1], 10) === year) {
+                console.log(`[${orgnr}] Fant regnskap for ${year} via API med år-parameter`);
+                return data as Record<string, unknown>;
+              }
             }
           }
         }
+      } catch (apiError) {
+        // Ignorer feil
       }
       
       return null;

@@ -200,8 +200,86 @@ async function extractFromWebsite(orgnr: string, axios: any): Promise<Array<{ ye
     
     console.log(`[${orgnr}] Fant ${uniqueYears.length} tilgjengelige år fra nettsiden: ${uniqueYears.join(', ')}`);
     
-    // Hent regnskap for hvert år via API
-    for (const year of uniqueYears) {
+    // Prøv å finne faktiske regnskap-data i HTML-en først
+    // Søk etter JSON-strukturer som kan inneholde regnskap
+    const $ = cheerio.load(html);
+    const scriptTags = $('script').toArray();
+    const seenJournalNumbers = new Set<string | number>();
+    
+    for (const script of scriptTags) {
+      const content = $(script).html() || '';
+      
+      // Prøv å finne JSON-data som inneholder regnskap
+      if (content.includes('regnskap') || content.includes('aarsregnskap') || content.includes('årsregnskap')) {
+        try {
+          // Prøv å ekstrahere JSON-objekt - søk etter større JSON-strukturer
+          // Bruk en mer permisiv pattern som kan fange opp nested JSON
+          const jsonPattern = /\{[\s\S]{100,100000}?"(?:regnskap|aarsregnskap)"[\s\S]{100,100000}?\}/g;
+          const jsonMatches = content.match(jsonPattern);
+          if (jsonMatches) {
+            for (const jsonStr of jsonMatches) {
+              try {
+                const data = JSON.parse(jsonStr);
+                const regnskap = findRegnskapInData(data, orgnr);
+                if (regnskap && regnskap.length > 0) {
+                  for (const rs of regnskap) {
+                    const periode = rs.regnskapsperiode as Record<string, unknown> | undefined;
+                    const tilDato = periode?.tilDato as string | undefined;
+                    let year: number | null = null;
+                    if (tilDato && typeof tilDato === 'string') {
+                      const yearMatch = tilDato.match(/(\d{4})/);
+                      if (yearMatch) {
+                        year = parseInt(yearMatch[1], 10);
+                      }
+                    }
+                    if (year && uniqueYears.includes(year)) {
+                      const journalNr = rs.journalnr || rs.journalnummer || rs.id;
+                      if (journalNr && (typeof journalNr === 'string' || typeof journalNr === 'number') && seenJournalNumbers.has(journalNr)) {
+                        continue; // Skip duplikat
+                      }
+                      if (journalNr && (typeof journalNr === 'string' || typeof journalNr === 'number')) {
+                        seenJournalNumbers.add(journalNr);
+                      }
+                      const documents = (rs.dokumenter || rs.documents || []) as Array<Record<string, unknown>>;
+                      entries.push({
+                        year,
+                        documents: Array.isArray(documents) ? documents : [],
+                        raw: rs,
+                      });
+                      console.log(`[${orgnr}] Fant regnskap for ${year} fra HTML JSON (journalnr: ${journalNr})`);
+                    }
+                  }
+                }
+              } catch (e) {
+                // Ignorer JSON-parse-feil
+              }
+            }
+          }
+        } catch (e) {
+          // Ignorer feil
+        }
+      }
+    }
+    
+    // Hvis vi ikke fant regnskap i HTML, prøv å hente via API for hvert år
+    // Men siden API-et returnerer samme regnskap for alle år, lagrer vi bare én per unikt journalnummer
+    // Fyll opp seenJournalNumbers med de vi allerede har funnet fra HTML
+    for (const entry of entries) {
+      const journalNr = entry.raw.journalnr || entry.raw.journalnummer || entry.raw.id;
+      if (journalNr && (typeof journalNr === 'string' || typeof journalNr === 'number')) {
+        seenJournalNumbers.add(journalNr);
+      }
+    }
+    
+    // Prøv bare for år vi ikke allerede har
+    const yearsToFetch = uniqueYears.filter(year => !entries.some(e => e.year === year));
+    
+    if (yearsToFetch.length > 0) {
+      console.log(`[${orgnr}] Prøver å hente ${yearsToFetch.length} manglende år via API...`);
+    }
+    
+    for (const year of yearsToFetch) {
+      
       try {
         const apiUrl = `https://data.brreg.no/regnskapsregisteret/regnskap/${orgnr}?ar=${year}`;
         const apiResponse = await axios.get(apiUrl, {
@@ -228,6 +306,12 @@ async function extractFromWebsite(orgnr: string, axios: any): Promise<Array<{ ye
           }
           
           const candidateObj = candidate as Record<string, unknown>;
+          const journalNr = candidateObj.journalnr || candidateObj.journalnummer || candidateObj.id;
+          
+          // Hvis vi allerede har sett dette journalnummeret, hopp over
+          if (journalNr && (typeof journalNr === 'string' || typeof journalNr === 'number') && seenJournalNumbers.has(journalNr)) {
+            continue;
+          }
           
           // Hent faktisk år fra regnskapsperiode
           const periode = candidateObj.regnskapsperiode as Record<string, unknown> | undefined;
@@ -245,6 +329,11 @@ async function extractFromWebsite(orgnr: string, axios: any): Promise<Array<{ ye
             actualYear = year;
           }
           
+          // Hvis faktisk år ikke er i listen over tilgjengelige år, hopp over
+          if (!uniqueYears.includes(actualYear)) {
+            continue;
+          }
+          
           // Hent dokumenter
           const documents = (candidateObj.dokumenter || candidateObj.documents || []) as Array<Record<string, unknown>>;
           
@@ -254,7 +343,11 @@ async function extractFromWebsite(orgnr: string, axios: any): Promise<Array<{ ye
             raw: candidateObj,
           });
           
-          console.log(`[${orgnr}] Fant regnskap for ${actualYear} fra nettsiden (journalnr: ${candidateObj.journalnr || candidateObj.journalnummer || candidateObj.id})`);
+          if (journalNr && (typeof journalNr === 'string' || typeof journalNr === 'number')) {
+            seenJournalNumbers.add(journalNr);
+          }
+          
+          console.log(`[${orgnr}] Fant regnskap for ${actualYear} fra API (journalnr: ${journalNr})`);
         }
       } catch (error) {
         // Ignorer feil for individuelle år
@@ -268,6 +361,50 @@ async function extractFromWebsite(orgnr: string, axios: any): Promise<Array<{ ye
     // Fallback til API-metoden
     return await extractYearsFromApiFallback(orgnr, axios);
   }
+}
+
+// Hjelpefunksjon for å finne regnskap i JSON-struktur
+function findRegnskapInData(data: unknown, orgnr: string): Array<Record<string, unknown>> {
+  const results: Array<Record<string, unknown>> = [];
+  
+  if (!data || typeof data !== 'object') {
+    return results;
+  }
+  
+  const obj = data as Record<string, unknown>;
+  
+  // Søk etter regnskap-felter
+  if (obj.regnskap && Array.isArray(obj.regnskap)) {
+    return obj.regnskap.filter((r): r is Record<string, unknown> => 
+      typeof r === 'object' && r !== null
+    );
+  }
+  
+  if (obj.aarsregnskap && Array.isArray(obj.aarsregnskap)) {
+    return obj.aarsregnskap.filter((r): r is Record<string, unknown> => 
+      typeof r === 'object' && r !== null
+    );
+  }
+  
+  // Rekursivt søk i nested objekter
+  for (const key in obj) {
+    if (key.toLowerCase().includes('regnskap') || key.toLowerCase().includes('aarsregnskap')) {
+      const value = obj[key];
+      if (Array.isArray(value)) {
+        return value.filter((r): r is Record<string, unknown> => 
+          typeof r === 'object' && r !== null
+        );
+      }
+    }
+    if (typeof obj[key] === 'object' && obj[key] !== null) {
+      const nested = findRegnskapInData(obj[key], orgnr);
+      if (nested.length > 0) {
+        results.push(...nested);
+      }
+    }
+  }
+  
+  return results;
 }
 
 // Fallback: Hent år fra API (samme som Python-koden)

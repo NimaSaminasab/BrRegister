@@ -13,7 +13,9 @@ export async function createApp() {
   const app = express();
 
   // Serve static files from public directory
-  app.use(express.static(path.join(__dirname, '../public')));
+  // __dirname in compiled code is dist/src, so we need to go up two levels
+  const publicPath = path.join(__dirname, '../../public');
+  app.use(express.static(publicPath));
 
   app.get('/healthz', (_req: Request, res: Response) => {
     res.json({ status: 'ok' });
@@ -36,9 +38,19 @@ export async function createApp() {
       res.json(reports);
     } catch (error) {
       console.error('Failed to fetch annual reports', error);
+      const err = error as Error;
+      const isTimeout = err.message.includes('ETIMEDOUT') || err.message.includes('timeout');
+      const isConnectionError = err.message.includes('ECONNREFUSED') || err.message.includes('connect');
+      
+      let errorMessage = 'Kunne ikke hente årsregnskap';
+      if (isTimeout || isConnectionError) {
+        errorMessage = 'Kunne ikke koble til databasen. Sjekk at databasen er tilgjengelig og at du har riktige tilgangsrettigheter.';
+      }
+      
       res.status(500).json({ 
-        message: 'Kunne ikke hente årsregnskap', 
-        error: (error as Error).message 
+        message: errorMessage,
+        error: err.message,
+        details: isTimeout || isConnectionError ? 'Database connection failed' : undefined
       });
     }
   });

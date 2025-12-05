@@ -337,7 +337,20 @@
           const response = await fetch(url);
 
           if (!response.ok) {
-            throw new Error(`Klarte ikke å hente årsregnskap (status ${response.status})`);
+            // Prøv å hente feilmelding fra responsen
+            let errorMessage = `Klarte ikke å hente årsregnskap (status ${response.status})`;
+            try {
+              const errorData = await response.json();
+              errorMessage = errorData.message || errorData.error || errorMessage;
+              if (errorData.details) {
+                errorMessage += ` (${errorData.details})`;
+              }
+            } catch (e) {
+              // Ignore JSON parse errors
+            }
+            const error = new Error(errorMessage);
+            (error as any).response = response;
+            throw error;
           }
 
           const reports = await response.json();
@@ -349,8 +362,28 @@
           tableElement.hidden = false;
         } catch (error) {
           statusElement.className = 'error';
-          statusElement.textContent =
-            error instanceof Error ? error.message : 'Ukjent feil ved henting av årsregnskap';
+          
+          let errorMessage = 'Ukjent feil ved henting av årsregnskap';
+          if (error instanceof TypeError && error.message.includes('fetch')) {
+            errorMessage = 'Kunne ikke koble til serveren. Sjekk at serveren kjører.';
+          } else if (error instanceof Error) {
+            errorMessage = error.message;
+          }
+          
+          // Hvis det er en HTTP-feil, prøv å hente feilmelding fra responsen
+          if (error instanceof Response) {
+            try {
+              const errorData = await error.json();
+              errorMessage = errorData.message || errorData.error || errorMessage;
+              if (errorData.details) {
+                errorMessage += ` (${errorData.details})`;
+              }
+            } catch (e) {
+              // Ignore JSON parse errors
+            }
+          }
+          
+          statusElement.textContent = errorMessage;
         }
       }
 

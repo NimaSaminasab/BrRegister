@@ -1,5 +1,8 @@
 import dotenv from 'dotenv';
 import * as cheerio from 'cheerio';
+import * as fs from 'fs';
+import * as path from 'path';
+import pdf from 'pdf-parse';
 
 import { createPostgresClient, getPostgresEnvConfig } from './postgres';
 import { fetchRegnskapApiEntries } from './regnskap-api';
@@ -47,7 +50,147 @@ interface RawFinancialDocument {
 
 const YEAR_REGEX = /^(19|20)\d{2}$/;
 
-// PDF-relaterte funksjoner er fjernet
+// Temp-mappe for PDF-filer
+const PDF_TEMP_DIR = path.join(__dirname, '../temp_pdfs');
+
+// Opprett temp-mappe hvis den ikke eksisterer
+if (!fs.existsSync(PDF_TEMP_DIR)) {
+  fs.mkdirSync(PDF_TEMP_DIR, { recursive: true });
+}
+
+// Hjelpefunksjon for å laste ned og parse PDF
+async function downloadAndParsePdf(
+  orgnr: string,
+  year: number,
+  pdfBuffer: Buffer,
+  axios: any
+): Promise<Record<string, unknown> | null> {
+  try {
+    // Finn PDF i responsen (samme som Python-koden)
+    const pdfStart = pdfBuffer.indexOf('%PDF');
+    if (pdfStart === -1) {
+      console.warn(`[${orgnr}] Ingen PDF funnet i respons for ${year}`);
+    return null;
+  }
+
+    // Finn %%EOF marker
+    const eofPos = pdfBuffer.lastIndexOf('%%EOF');
+    if (eofPos === -1) {
+      console.warn(`[${orgnr}] PDF er ufullstendig (ingen %%EOF marker) for ${year}`);
+      return null;
+    }
+    
+    // Ekstraher PDF
+    const pdfData = pdfBuffer.subarray(pdfStart, eofPos + 6); // +6 for "%%EOF\n"
+    
+    // Valider at det er en PDF
+    if (!pdfData.toString('utf-8', 0, 4).startsWith('%PDF') || pdfData.length < 1000) {
+      console.warn(`[${orgnr}] Ugyldig PDF-data for ${year}`);
+      return null;
+    }
+    
+    // Lagre PDF til temp-fil
+    const tempPdfPath = path.join(PDF_TEMP_DIR, `${orgnr}_${year}.pdf`);
+    fs.writeFileSync(tempPdfPath, pdfData);
+    
+    try {
+      // Parse PDF
+      const pdfDoc = await pdf(pdfData);
+      const pdfText = pdfDoc.text;
+      
+      // Prøv å finne JSON-data i PDF-teksten
+      // PDF-er kan inneholde JSON-data som tekst
+      const jsonMatches = pdfText.match(/\{[\s\S]{100,100000}?"(?:regnskap|journalnr|regnskapsperiode)"[\s\S]{100,100000}?\}/g);
+      if (jsonMatches && jsonMatches.length > 0) {
+        for (const jsonStr of jsonMatches) {
+          try {
+            const jsonData = JSON.parse(jsonStr);
+            if (jsonData && typeof jsonData === 'object' && (jsonData.journalnr || jsonData.regnskapsperiode)) {
+              // Slett temp-fil
+              fs.unlinkSync(tempPdfPath);
+              return jsonData as Record<string, unknown>;
+            }
+          } catch (e) {
+            // Ignorer JSON-parse-feil
+          }
+        }
+      }
+      
+      // Prøv å finne journalnummer i PDF-teksten
+      // Format kan være: "journalnr": "1234567890" eller journalnr: 1234567890
+      const journalNrMatch = pdfText.match(/journalnr[":\s]+(\d{10})/i);
+      const journalNr = journalNrMatch ? journalNrMatch[1] : null;
+      
+      // Slett temp-fil
+      fs.unlinkSync(tempPdfPath);
+      
+      // Prøv å hente via API med journalnummer hvis vi fant det
+      if (journalNr) {
+        try {
+          const apiUrl = `https://data.brreg.no/regnskapsregisteret/regnskap/${orgnr}?journalnr=${journalNr}`;
+          const apiResponse = await axios.get(apiUrl, {
+            headers: { Accept: 'application/json' },
+            timeout: 10000,
+            validateStatus: (status: number) => status === 200 || status === 404,
+          });
+          
+          if (apiResponse.status === 200 && apiResponse.data) {
+            const data = Array.isArray(apiResponse.data) ? apiResponse.data[0] : apiResponse.data;
+            if (data && typeof data === 'object') {
+              // Sjekk om faktisk år matcher
+              const periode = data.regnskapsperiode as Record<string, unknown> | undefined;
+              const tilDato = periode?.tilDato as string | undefined;
+              if (tilDato && typeof tilDato === 'string') {
+                const yearMatch = tilDato.match(/(\d{4})/);
+                if (yearMatch && parseInt(yearMatch[1], 10) === year) {
+                  return data as Record<string, unknown>;
+                }
+              }
+              // Hvis år ikke matcher, returner data uansett (kan være at PDF-en er for et annet år)
+              return data as Record<string, unknown>;
+            }
+          }
+        } catch (apiError) {
+          // Ignorer feil
+        }
+      }
+      
+      // Fallback: Prøv å hente via API (uten journalnummer, bare med år)
+      const apiUrl = `https://data.brreg.no/regnskapsregisteret/regnskap/${orgnr}?ar=${year}`;
+      const apiResponse = await axios.get(apiUrl, {
+        headers: { Accept: 'application/json' },
+        timeout: 10000,
+        validateStatus: (status: number) => status === 200 || status === 404,
+      });
+      
+      if (apiResponse.status === 200 && apiResponse.data) {
+        const data = Array.isArray(apiResponse.data) ? apiResponse.data[0] : apiResponse.data;
+        if (data && typeof data === 'object') {
+          // Sjekk om faktisk år matcher
+          const periode = data.regnskapsperiode as Record<string, unknown> | undefined;
+          const tilDato = periode?.tilDato as string | undefined;
+          if (tilDato && typeof tilDato === 'string') {
+            const yearMatch = tilDato.match(/(\d{4})/);
+            if (yearMatch && parseInt(yearMatch[1], 10) === year) {
+              return data as Record<string, unknown>;
+            }
+          }
+        }
+      }
+      
+      return null;
+    } catch (parseError) {
+      // Slett temp-fil hvis parsing feiler
+      if (fs.existsSync(tempPdfPath)) {
+        fs.unlinkSync(tempPdfPath);
+      }
+      throw parseError;
+    }
+  } catch (error) {
+    console.warn(`[${orgnr}] Feil ved PDF-download/parsing for ${year}:`, (error as Error).message);
+    return null;
+  }
+}
 
 async function main() {
   const orgArgs = process.argv.slice(2).map((value) => value.replace(/\D+/g, '')).filter(Boolean);
@@ -85,6 +228,29 @@ async function main() {
   }
 
   await client.end();
+  
+  // Rydd opp temp PDF-filer
+  try {
+    if (fs.existsSync(PDF_TEMP_DIR)) {
+      const files = fs.readdirSync(PDF_TEMP_DIR);
+      for (const file of files) {
+        const filePath = path.join(PDF_TEMP_DIR, file);
+        try {
+          fs.unlinkSync(filePath);
+        } catch (e) {
+          // Ignorer feil ved sletting
+        }
+      }
+      try {
+        fs.rmdirSync(PDF_TEMP_DIR);
+      } catch (e) {
+        // Ignorer feil hvis mappen ikke er tom
+      }
+    }
+  } catch (cleanupError) {
+    console.warn('Feil ved opprydding av temp PDF-filer:', (cleanupError as Error).message);
+  }
+  
   console.log('✅ Ferdig med scraping av årsregnskap');
 }
 
@@ -316,12 +482,11 @@ async function extractFromWebsite(orgnr: string, axios: any): Promise<Array<{ ye
           });
           
           if (serverActionResponse.status === 200) {
-            // Server Action returnerer PDF-data, men vi prøver å se om det er JSON først
-            const responseData = serverActionResponse.data;
-            const responseText = Buffer.from(responseData).toString('utf-8');
+            const responseData = Buffer.from(serverActionResponse.data);
             
             // Prøv å parse som JSON først
             try {
+              const responseText = responseData.toString('utf-8');
               const jsonData = JSON.parse(responseText);
               if (jsonData && typeof jsonData === 'object') {
                 // Hvis det er JSON-data, bruk det
@@ -348,7 +513,22 @@ async function extractFromWebsite(orgnr: string, axios: any): Promise<Array<{ ye
                 continue; // Hopp til neste år
               }
             } catch (jsonError) {
-              // Ikke JSON, sannsynligvis PDF-data - fortsett til API-metoden
+              // Ikke JSON, sannsynligvis PDF-data - last ned og parse PDF
+              try {
+                console.log(`[${orgnr}] Laster ned PDF for ${year}...`);
+                const pdfData = await downloadAndParsePdf(orgnr, year, responseData, axios);
+                if (pdfData) {
+                  entries.push({
+                    year,
+                    documents: [],
+                    raw: pdfData,
+                  });
+                  console.log(`[${orgnr}] Fant regnskap for ${year} via PDF-parsing (journalnr: ${pdfData.journalnr || pdfData.journalnummer || pdfData.id})`);
+                  continue; // Hopp til neste år
+                }
+              } catch (pdfError) {
+                console.warn(`[${orgnr}] Feil ved PDF-parsing for ${year}:`, (pdfError as Error).message);
+              }
             }
           }
         } catch (serverActionError) {
@@ -387,10 +567,7 @@ async function extractFromWebsite(orgnr: string, axios: any): Promise<Array<{ ye
           }
         }
         
-        // Siden Server Action returnerer PDF-data og ikke JSON-data,
-        // og API-et ikke støtter historiske regnskap, må vi akseptere at vi bare får det nyeste
-        // Men vi prøver fortsatt å hente via API for å se om det fungerer
-        console.log(`[${orgnr}] Kunne ikke hente regnskap for ${year} - Server Action returnerer PDF, ikke JSON`);
+        console.log(`[${orgnr}] Kunne ikke hente regnskap for ${year}`);
         
       } catch (error) {
         // Ignorer feil for individuelle år
@@ -407,7 +584,7 @@ async function extractFromWebsite(orgnr: string, axios: any): Promise<Array<{ ye
         if (entries.some(e => e.year === year)) {
           continue;
         }
-        
+
         try {
           // Prøv å hente regnskap via journalnummer
           const apiUrl = `https://data.brreg.no/regnskapsregisteret/regnskap/${orgnr}?journalnr=${journalNr}`;
@@ -466,7 +643,7 @@ async function extractFromWebsite(orgnr: string, axios: any): Promise<Array<{ ye
                   let year: number | null = null;
                   if (tilDato && typeof tilDato === 'string') {
                     const yearMatch = tilDato.match(/(\d{4})/);
-                    if (yearMatch) {
+          if (yearMatch) {
                       year = parseInt(yearMatch[1], 10);
                     }
                   }
@@ -514,7 +691,7 @@ async function extractFromWebsite(orgnr: string, axios: any): Promise<Array<{ ye
                     let year: number | null = null;
                     if (tilDato && typeof tilDato === 'string') {
                       const yearMatch = tilDato.match(/(\d{4})/);
-                      if (yearMatch) {
+            if (yearMatch) {
                         year = parseInt(yearMatch[1], 10);
                       }
                     }
@@ -580,9 +757,9 @@ async function extractFromWebsite(orgnr: string, axios: any): Promise<Array<{ ye
         
         const data = apiResponse.data;
         if (!data) {
-          continue;
-        }
-        
+            continue;
+          }
+
         // Normaliser data til array-format
         const candidates = Array.isArray(data) ? data : (data.regnskap ? data.regnskap : [data]);
         
@@ -796,9 +973,9 @@ async function extractFromRegnskapApi(orgnr: string): Promise<AnnualReport[]> {
         // Behandle alle regnskap
         for (const regnskap of allRegnskap) {
           if (!regnskap || typeof regnskap !== 'object') {
-            continue;
-          }
-          
+          continue;
+        }
+
           const regnskapObj = regnskap as Record<string, unknown>;
           
           // Logg strukturen av første regnskap for debugging
@@ -819,7 +996,7 @@ async function extractFromRegnskapApi(orgnr: string): Promise<AnnualReport[]> {
           let actualYear: number | null = null;
           if (tilDato && typeof tilDato === 'string') {
             const yearMatch = tilDato.match(/(\d{4})/);
-            if (yearMatch) {
+          if (yearMatch) {
               actualYear = parseInt(yearMatch[1], 10);
             }
           }
@@ -889,9 +1066,9 @@ async function extractFromRegnskapApi(orgnr: string): Promise<AnnualReport[]> {
         
         if (response.status === 404) {
           // Ingen regnskap for dette året
-          continue;
-        }
-        
+        continue;
+      }
+      
         const data = response.data;
         if (!data) {
           continue;
@@ -1007,7 +1184,7 @@ async function extractFromRegnskapApi(orgnr: string): Promise<AnnualReport[]> {
         hasRaw: !!entry.raw,
         rawKeys: entry.raw ? Object.keys(entry.raw).slice(0, 10) : [],
       });
-      
+
       const rawDocs = mapApiDocumentsToRaw(entry.documents);
       console.log(`[${orgnr}] Mapped ${rawDocs.length} dokumenter fra API for ${entry.year}`);
       

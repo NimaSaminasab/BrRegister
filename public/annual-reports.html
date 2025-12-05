@@ -256,7 +256,16 @@
             yearCell.textContent = report.ar;
 
             const aarsresultatCell = document.createElement('td');
-            const aarsresultat = report.data?.raw?.resultatregnskapResultat?.aarsresultat;
+            // Prøv å hente årsresultat fra forskjellige steder i datastrukturen
+            let aarsresultat = report.data?.raw?.resultatregnskapResultat?.aarsresultat;
+            // Hvis ikke funnet, prøv direkte i raw
+            if (aarsresultat === undefined || aarsresultat === null) {
+              aarsresultat = report.data?.raw?.aarsresultat;
+            }
+            // Hvis ikke funnet, prøv i summary
+            if (aarsresultat === undefined || aarsresultat === null) {
+              aarsresultat = report.data?.summary?.resultatregnskapResultat?.aarsresultat;
+            }
             if (aarsresultat !== undefined && aarsresultat !== null) {
               // Formater som norsk tall med tusen-separator
               aarsresultatCell.textContent = new Intl.NumberFormat('nb-NO').format(aarsresultat);

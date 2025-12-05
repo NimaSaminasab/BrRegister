@@ -233,21 +233,89 @@ async function downloadAndParsePdf(
         // Ignorer feil
       }
       
+      // Hvis vi ikke kan få JSON-data, prøv å ekstraktere årsresultat direkte fra PDF-teksten
+      let extractedAarsresultat: number | null = null;
+      
+      // Prøv forskjellige patterns for å finne årsresultat i PDF-teksten
+      const aarsresultatPatterns = [
+        // "Årsresultat: 348 197" eller "Årsresultat 348 197"
+        /årsresultat[:\s]+([-]?\d{1,3}(?:\s?\d{3})*(?:\s?\d{3})*)/i,
+        // "Resultat for året: 348 197"
+        /resultat\s+for\s+året[:\s]+([-]?\d{1,3}(?:\s?\d{3})*(?:\s?\d{3})*)/i,
+        // "Årsresultatet er 348 197"
+        /årsresultatet\s+er[:\s]+([-]?\d{1,3}(?:\s?\d{3})*(?:\s?\d{3})*)/i,
+        // "Nettoresultat: 348 197"
+        /nettoresultat[:\s]+([-]?\d{1,3}(?:\s?\d{3})*(?:\s?\d{3})*)/i,
+        // "Resultat: 348 197"
+        /resultat[:\s]+([-]?\d{1,3}(?:\s?\d{3})*(?:\s?\d{3})*)/i,
+        // "Årsresultat" på en linje, tall på neste linje
+        /årsresultat\s*\n\s*([-]?\d{1,3}(?:\s?\d{3})*(?:\s?\d{3})*)/i,
+      ];
+      
+      for (const pattern of aarsresultatPatterns) {
+        const match = pdfText.match(pattern);
+        if (match && match[1]) {
+          // Fjern mellomrom og konverter til tall
+          const cleanedValue = match[1].replace(/\s+/g, '');
+          const parsedValue = parseInt(cleanedValue, 10);
+          if (!isNaN(parsedValue)) {
+            extractedAarsresultat = parsedValue;
+            console.log(`[${orgnr}] Fant årsresultat ${extractedAarsresultat} i PDF-teksten for ${year}`);
+            break;
+          }
+        }
+      }
+      
+      // Hvis vi ikke fant årsresultat med patterns, prøv å finne det i tabell-format
+      // Mange årsregnskap har årsresultat i en tabell
+      if (extractedAarsresultat === null) {
+        // Prøv å finne tall som ser ut som årsresultat (stort tall, ofte i nærheten av "resultat" eller "år")
+        const lines = pdfText.split('\n');
+        for (let i = 0; i < lines.length; i++) {
+          const line = lines[i].toLowerCase();
+          if (line.includes('årsresultat') || line.includes('resultat') || (line.includes('år') && line.includes('resultat'))) {
+            // Se på neste linjer for å finne et tall
+            for (let j = i; j < Math.min(i + 5, lines.length); j++) {
+              const numberMatch = lines[j].match(/([-]?\d{1,3}(?:\s?\d{3})*(?:\s?\d{3})*)/);
+              if (numberMatch) {
+                const cleanedValue = numberMatch[1].replace(/\s+/g, '');
+                const parsedValue = parseInt(cleanedValue, 10);
+                if (!isNaN(parsedValue) && Math.abs(parsedValue) > 1000) { // Årsresultat er vanligvis et stort tall
+                  extractedAarsresultat = parsedValue;
+                  console.log(`[${orgnr}] Fant årsresultat ${extractedAarsresultat} i PDF-teksten (linje ${j + 1}) for ${year}`);
+                  break;
+                }
+              }
+            }
+            if (extractedAarsresultat !== null) break;
+          }
+        }
+      }
+      
       // Hvis vi ikke kan få JSON-data, men har PDF-en, lagre PDF-stien som "raw data"
-      // Dette betyr at vi har PDF-en, men ikke kan parse den for JSON-data
-      // Vi lagrer PDF-stien i stedet for å indikere at data finnes, men bare som PDF
+      // Men inkluder ekstrahert årsresultat hvis vi fant det
       console.log(`[${orgnr}] Kunne ikke hente JSON-data for ${year}, men PDF er lastet ned. Lagrer PDF-sti som raw data.`);
       
       // Behold PDF-filen (ikke slett den) og returner metadata
       // Merk: PDF-filen vil ikke bli slettet automatisk, så vi må håndtere cleanup senere
-      return {
+      const result: Record<string, unknown> = {
         year,
         pdfPath: tempPdfPath,
         pdfSize: pdfData.length,
         hasJsonData: false,
         source: 'pdf-only',
         orgnr,
-      } as Record<string, unknown>;
+      };
+      
+      // Legg til ekstrahert årsresultat hvis vi fant det
+      if (extractedAarsresultat !== null) {
+        result.resultatregnskapResultat = {
+          aarsresultat: extractedAarsresultat,
+        };
+        console.log(`[${orgnr}] Lagrer ekstrahert årsresultat ${extractedAarsresultat} for ${year}`);
+      }
+      
+      return result;
     } catch (parseError) {
       // Slett temp-fil hvis parsing feiler (men ikke hvis vi returnerte PDF-metadata)
       // Sjekk om feilen er relatert til at vi ikke fant JSON-data

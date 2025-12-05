@@ -226,12 +226,116 @@ async function extractFromWebsite(orgnr: string, axios: any): Promise<Array<{ ye
     
     console.log(`[${orgnr}] Fant ${uniqueYears.length} tilgjengelige år fra nettsiden: ${uniqueYears.join(', ')}`);
     
-    // Prøv å hente regnskap via journalnummer hvis vi fant dem
-    // Bruk journalnummer for å hente spesifikke regnskap via API
+    // Prøv å bruke Next.js Server Actions for å hente regnskap-data (samme som Python-koden)
+    // Finn Next.js build ID og Server Action ID fra HTML-en
+    const buildIdMatch = html.match(/"__NEXT_DATA__"[^}]*?"buildId":"([^"]+)"/);
+    const buildId = buildIdMatch ? buildIdMatch[1] : null;
+    
+    // Prøv å finne Server Action ID for å hente årsregnskap
+    // Next.js Server Actions bruker spesifikke endepunkter
+    if (buildId) {
+      console.log(`[${orgnr}] Fant Next.js build ID, prøver å hente regnskap via Server Actions...`);
+      
+      // Prøv å hente regnskap for hvert år via Next.js Server Actions
+      // Bruk samme tilnærming som Python-koden, men for JSON-data i stedet for PDFs
+      for (const year of uniqueYears) {
+        try {
+          // Prøv flere mulige endepunkter for Next.js Server Actions
+          const endpoints = [
+            `https://virksomhet.brreg.no/_next/data/${buildId}/nb/oppslag/enheter/${orgnr}.json?ar=${year}`,
+            `https://virksomhet.brreg.no/api/regnskap/${orgnr}/${year}`,
+            `https://virksomhet.brreg.no/api/regnskap?orgnr=${orgnr}&ar=${year}`,
+          ];
+          
+          for (const endpoint of endpoints) {
+            try {
+              const response = await axios.get(endpoint, {
+                headers: {
+                  'Accept': 'application/json',
+                  'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+                  'Referer': `https://virksomhet.brreg.no/nb/oppslag/enheter/${orgnr}`,
+                },
+                timeout: 15000,
+                validateStatus: (status: number) => status === 200 || status === 404 || status === 400,
+              });
+              
+              if (response.status === 200 && response.data) {
+                // Parse responsen - kan være direkte JSON eller nested i Next.js-format
+                let regnskapData: Record<string, unknown> | null = null;
+                
+                if (typeof response.data === 'object' && response.data !== null) {
+                  // Hvis det er direkte regnskap-data
+                  if (response.data.regnskap || response.data.aarsregnskap || response.data.journalnr) {
+                    regnskapData = response.data as Record<string, unknown>;
+                  } 
+                  // Hvis det er Next.js page data format
+                  else if (response.data.pageProps) {
+                    const pageProps = (response.data.pageProps as Record<string, unknown>);
+                    if (pageProps.regnskap || pageProps.aarsregnskap) {
+                      regnskapData = pageProps as Record<string, unknown>;
+                    }
+                  }
+                  // Hvis det er en array
+                  else if (Array.isArray(response.data) && response.data.length > 0) {
+                    regnskapData = response.data[0] as Record<string, unknown>;
+                  }
+                }
+                
+                if (regnskapData) {
+                  const periode = regnskapData.regnskapsperiode as Record<string, unknown> | undefined;
+                  const tilDato = periode?.tilDato as string | undefined;
+                  let actualYear: number | null = null;
+                  if (tilDato && typeof tilDato === 'string') {
+                    const yearMatch = tilDato.match(/(\d{4})/);
+                    if (yearMatch) {
+                      actualYear = parseInt(yearMatch[1], 10);
+                    }
+                  }
+                  if (!actualYear) {
+                    actualYear = year;
+                  }
+                  
+                  // Sjekk om vi allerede har dette regnskapet
+                  const journalNr = regnskapData.journalnr || regnskapData.journalnummer || regnskapData.id;
+                  const existing = entries.find(e => {
+                    const eJournalNr = e.raw.journalnr || e.raw.journalnummer || e.raw.id;
+                    return eJournalNr === journalNr || e.year === actualYear;
+                  });
+                  
+                  if (!existing) {
+                    const documents = (regnskapData.dokumenter || regnskapData.documents || []) as Array<Record<string, unknown>>;
+                    entries.push({
+                      year: actualYear,
+                      documents: Array.isArray(documents) ? documents : [],
+                      raw: regnskapData,
+                    });
+                    console.log(`[${orgnr}] Fant regnskap for ${actualYear} via Next.js Server Action (journalnr: ${journalNr})`);
+                    break; // Hopp ut av endpoint-loop hvis vi fant data
+                  }
+                }
+              }
+            } catch (endpointError) {
+              // Prøv neste endpoint
+              continue;
+            }
+          }
+        } catch (error) {
+          // Ignorer feil for individuelle år
+          console.warn(`[${orgnr}] Feil ved henting av regnskap for ${year} via Server Action:`, (error as Error).message);
+        }
+      }
+    }
+    
+    // Prøv å hente regnskap via journalnummer hvis vi fant dem (fallback)
     if (yearJournalMap.size > 0) {
       console.log(`[${orgnr}] Fant ${yearJournalMap.size} journalnummer i HTML, prøver å hente regnskap via journalnummer...`);
       
       for (const [year, journalNr] of yearJournalMap.entries()) {
+        // Hopp over hvis vi allerede har regnskap for dette året
+        if (entries.some(e => e.year === year)) {
+          continue;
+        }
+        
         try {
           // Prøv å hente regnskap via journalnummer
           const apiUrl = `https://data.brreg.no/regnskapsregisteret/regnskap/${orgnr}?journalnr=${journalNr}`;

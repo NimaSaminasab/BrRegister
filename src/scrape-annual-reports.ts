@@ -66,13 +66,25 @@ async function downloadAndParsePdf(
   axios: any
 ): Promise<Record<string, unknown> | null> {
   try {
+    // Sjekk om responsen inneholder feilmelding
+    const responseText = pdfBuffer.toString('utf-8', 0, Math.min(500, pdfBuffer.length));
+    if (responseText.includes('Server action not found') || responseText.includes('error') || responseText.includes('Error')) {
+      console.warn(`[${orgnr}] Server Action returnerte feilmelding for ${year}: ${responseText.substring(0, 100)}`);
+      return null;
+    }
+    
     // Finn PDF i responsen (samme som Python-koden)
     const pdfStart = pdfBuffer.indexOf('%PDF');
     if (pdfStart === -1) {
-      console.warn(`[${orgnr}] Ingen PDF funnet i respons for ${year}`);
-    return null;
-  }
-
+      // Prøv å se om det er en feilmelding
+      if (responseText.length < 500) {
+        console.warn(`[${orgnr}] Ingen PDF funnet i respons for ${year}, respons: ${responseText.substring(0, 200)}`);
+      } else {
+        console.warn(`[${orgnr}] Ingen PDF funnet i respons for ${year} (respons størrelse: ${pdfBuffer.length} bytes)`);
+      }
+      return null;
+    }
+    
     // Finn %%EOF marker
     const eofPos = pdfBuffer.lastIndexOf('%%EOF');
     if (eofPos === -1) {
@@ -438,18 +450,63 @@ async function extractFromWebsite(orgnr: string, axios: any): Promise<Array<{ ye
     
     console.log(`[${orgnr}] Fant ${uniqueYears.length} tilgjengelige år fra nettsiden: ${uniqueYears.join(', ')}`);
     
-    // Bruk Next.js Server Actions for å hente regnskap-data (samme som Python-koden)
-    // Next.js Server Action ID for PDF download (samme som Python-koden)
-    // Merk: Dette returnerer PDF-data, men vi prøver å få JSON-data via API i stedet
+    // Først: Prøv å hente regnskap via API med journalnummer fra HTML (raskere enn PDF-download)
+    if (yearJournalMap.size > 0) {
+      console.log(`[${orgnr}] Prøver å hente regnskap via API med ${yearJournalMap.size} journalnummer fra HTML...`);
+      for (const [year, journalNr] of yearJournalMap.entries()) {
+        // Hopp over hvis vi allerede har regnskap for dette året
+        if (entries.some(e => e.year === year)) {
+          continue;
+        }
+        
+        try {
+          const apiUrl = `https://data.brreg.no/regnskapsregisteret/regnskap/${orgnr}?journalnr=${journalNr}`;
+          const apiResponse = await axios.get(apiUrl, {
+            headers: { Accept: 'application/json' },
+            timeout: 10000,
+            validateStatus: (status: number) => status === 200 || status === 404,
+          });
+          
+          if (apiResponse.status === 200 && apiResponse.data) {
+            const data = Array.isArray(apiResponse.data) ? apiResponse.data[0] : apiResponse.data;
+            if (data && typeof data === 'object') {
+              // Sjekk om faktisk år matcher
+              const periode = data.regnskapsperiode as Record<string, unknown> | undefined;
+              const tilDato = periode?.tilDato as string | undefined;
+              let actualYear: number | null = null;
+              if (tilDato && typeof tilDato === 'string') {
+                const yearMatch = tilDato.match(/(\d{4})/);
+                if (yearMatch) {
+                  actualYear = parseInt(yearMatch[1], 10);
+                }
+              }
+              if (!actualYear) {
+                actualYear = year;
+              }
+              
+              const documents = (data.dokumenter || data.documents || []) as Array<Record<string, unknown>>;
+              entries.push({
+                year: actualYear,
+                documents: Array.isArray(documents) ? documents : [],
+                raw: data as Record<string, unknown>,
+              });
+              console.log(`[${orgnr}] Fant regnskap for ${actualYear} via API med journalnummer ${journalNr} fra HTML`);
+            }
+          }
+        } catch (apiError) {
+          // Ignorer feil, fortsett til PDF-download
+        }
+      }
+    }
+    
+    // Deretter: Bruk Next.js Server Actions for å laste ned PDF for år som mangler
     const nextActionId = "7fe7b594d072ac1557da402414c7b7b1f94a43fe62";
     const baseUrl = `https://virksomhet.brreg.no/nb/oppslag/enheter/${orgnr}`;
     
-    console.log(`[${orgnr}] Prøver å hente regnskap via Next.js Server Actions (samme som Python-koden)...`);
+    console.log(`[${orgnr}] Prøver å hente manglende regnskap via Next.js Server Actions (PDF-download)...`);
     
     // Prøv å hente regnskap for hvert år via Next.js Server Actions
     // Python-koden bruker POST med body: ["{orgnr}","{year}"]
-    // Men siden vi trenger JSON-data, ikke PDFs, prøver vi å hente via API i stedet
-    // Men først prøver vi å se om vi kan få JSON-data fra Server Action-responsen
     
     for (const year of uniqueYears) {
       // Hopp over hvis vi allerede har regnskap for dette året
@@ -458,8 +515,7 @@ async function extractFromWebsite(orgnr: string, axios: any): Promise<Array<{ ye
       }
       
       try {
-        // Prøv først å hente via Next.js Server Action (samme som Python-koden)
-        // Men vi prøver å få JSON-data, ikke PDF-data
+        // Prøv å laste ned PDF via Next.js Server Action (samme som Python-koden)
         const serverActionHeaders = {
           'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
           'Accept': 'application/json, text/x-component, */*',
@@ -477,7 +533,7 @@ async function extractFromWebsite(orgnr: string, axios: any): Promise<Array<{ ye
           const serverActionResponse = await axios.post(baseUrl, body, {
             headers: serverActionHeaders,
             timeout: 120000,
-            validateStatus: (status: number) => status === 200 || status === 404 || status === 400,
+            validateStatus: (status: number) => status === 200 || status === 404 || status === 400 || status === 500,
             responseType: 'arraybuffer', // For å kunne lese både JSON og PDF
           });
           
@@ -525,14 +581,27 @@ async function extractFromWebsite(orgnr: string, axios: any): Promise<Array<{ ye
                   });
                   console.log(`[${orgnr}] Fant regnskap for ${year} via PDF-parsing (journalnr: ${pdfData.journalnr || pdfData.journalnummer || pdfData.id})`);
                   continue; // Hopp til neste år
+                } else {
+                  console.warn(`[${orgnr}] Kunne ikke parse PDF eller hente JSON-data for ${year}`);
                 }
               } catch (pdfError) {
                 console.warn(`[${orgnr}] Feil ved PDF-parsing for ${year}:`, (pdfError as Error).message);
               }
             }
+          } else {
+            // Server returnerte feil status
+            const errorText = Buffer.from(serverActionResponse.data).toString('utf-8').substring(0, 200);
+            console.warn(`[${orgnr}] Server Action returnerte status ${serverActionResponse.status} for ${year}: ${errorText}`);
           }
-        } catch (serverActionError) {
-          // Ignorer feil, prøv API-metoden i stedet
+        } catch (serverActionError: any) {
+          // Logg feilen for bedre debugging
+          if (serverActionError.response) {
+            const status = serverActionError.response.status;
+            const errorText = serverActionError.response.data ? Buffer.from(serverActionError.response.data).toString('utf-8').substring(0, 200) : 'Ingen feilmelding';
+            console.warn(`[${orgnr}] Server Action feilet for ${year} (status ${status}): ${errorText}`);
+          } else {
+            console.warn(`[${orgnr}] Server Action feilet for ${year}:`, (serverActionError as Error).message);
+          }
         }
         
         // Fallback: Prøv å hente via det offentlige API-et med journalnummer

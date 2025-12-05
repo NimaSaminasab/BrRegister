@@ -23,7 +23,14 @@ export async function fetchCompaniesFromPostgres(batchSize = DEFAULT_BATCH_SIZE)
     console.log(
       `Reading companies from postgres://${postgresConfig.host}:${postgresConfig.port}/${postgresConfig.database}`,
     );
-    await client.connect();
+    
+    // Legg til timeout på connect
+    const connectPromise = client.connect();
+    const timeoutPromise = new Promise<never>((_, reject) => {
+      setTimeout(() => reject(new Error('Database connection timeout after 10 seconds')), 10000);
+    });
+    
+    await Promise.race([connectPromise, timeoutPromise]);
 
     while (true) {
       const result = await client.query<PostgresCompanyRow>(
@@ -61,8 +68,18 @@ export async function fetchCompaniesFromPostgres(batchSize = DEFAULT_BATCH_SIZE)
 
       offset += result.rows.length;
     }
+  } catch (error) {
+    const err = error as Error;
+    if (err.message.includes('timeout') || err.message.includes('ETIMEDOUT') || err.message.includes('ECONNREFUSED')) {
+      throw new Error('Kunne ikke koble til databasen. Databasen er sannsynligvis kun tilgjengelig fra EC2. Kjør serveren på EC2 i stedet for lokalt.');
+    }
+    throw error;
   } finally {
-    await client.end().catch(() => {});
+    try {
+      await client.end();
+    } catch (e) {
+      // Ignore errors when closing connection
+    }
   }
 
   return companies;

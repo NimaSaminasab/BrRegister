@@ -47,6 +47,8 @@ export function createPostgresClient(config: PostgresEnvConfig) {
     user: config.user,
     password: config.password,
     ssl: parseSslSetting(config.ssl),
+    connectionTimeoutMillis: 10000, // 10 sekunder timeout for tilkobling
+    query_timeout: 30000, // 30 sekunder timeout for queries
   });
 }
 

@@ -185,6 +185,7 @@
           <th scope="col">Organisasjonsnummer</th>
           <th scope="col">Selskap</th>
           <th scope="col">År</th>
+          <th scope="col">Årsresultat</th>
           <th scope="col">Datatype</th>
         </tr>
       </thead>
@@ -193,7 +194,7 @@
 
     <template id="empty-row">
       <tr>
-        <td colspan="4" style="text-align: center; padding: 2rem">Ingen årsregnskap funnet.</td>
+        <td colspan="5" style="text-align: center; padding: 2rem">Ingen årsregnskap funnet.</td>
       </tr>
     </template>
 
@@ -236,7 +237,7 @@
           const headerRow = document.createElement('tr');
           headerRow.className = 'group-header';
           const headerCell = document.createElement('td');
-          headerCell.colSpan = 4;
+          headerCell.colSpan = 5;
           headerCell.textContent = `${orgnr} - ${orgReports[0].company_name || 'Ukjent navn'} (${orgReports.length} årsregnskap)`;
           headerRow.appendChild(headerCell);
           tbodyElement.appendChild(headerRow);
@@ -254,6 +255,15 @@
             const yearCell = document.createElement('td');
             yearCell.textContent = report.ar;
 
+            const aarsresultatCell = document.createElement('td');
+            const aarsresultat = report.data?.raw?.resultatregnskapResultat?.aarsresultat;
+            if (aarsresultat !== undefined && aarsresultat !== null) {
+              // Formater som norsk tall med tusen-separator
+              aarsresultatCell.textContent = new Intl.NumberFormat('nb-NO').format(aarsresultat);
+            } else {
+              aarsresultatCell.textContent = '—';
+            }
+
             const dataTypeCell = document.createElement('td');
             const dataType = getDataType(report.data);
             const badge = document.createElement('span');
@@ -261,7 +271,7 @@
             badge.textContent = dataType.label;
             dataTypeCell.appendChild(badge);
 
-            tr.append(orgnrCell, nameCell, yearCell, dataTypeCell);
+            tr.append(orgnrCell, nameCell, yearCell, aarsresultatCell, dataTypeCell);
             tbodyElement.appendChild(tr);
           }
         }

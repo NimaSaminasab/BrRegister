@@ -7,3 +7,4 @@ cdk.out/
 .aws-sam/
 temp-pdfs/
 
+.vercel

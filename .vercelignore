@@ -1,0 +1,11 @@
+node_modules
+dist
+cdk.out
+data
+*.log
+.env
+.env.local
+.git
+.vscode
+.idea
+

@@ -334,7 +334,21 @@
           tableElement.hidden = true;
           statsElement.hidden = true;
 
-          const response = await fetch(url);
+          // Legg til timeout på fetch
+          const controller = new AbortController();
+          const timeoutId = setTimeout(() => controller.abort(), 15000); // 15 sekunder timeout
+
+          let response;
+          try {
+            response = await fetch(url, { signal: controller.signal });
+            clearTimeout(timeoutId);
+          } catch (fetchError) {
+            clearTimeout(timeoutId);
+            if (fetchError.name === 'AbortError') {
+              throw new Error('Forespørselen tok for lang tid. Databasen er sannsynligvis ikke tilgjengelig fra lokal maskin. Kjør serveren på EC2 i stedet.');
+            }
+            throw fetchError;
+          }
 
           if (!response.ok) {
             // Prøv å hente feilmelding fra responsen
@@ -381,6 +395,11 @@
             } catch (e) {
               // Ignore JSON parse errors
             }
+          }
+          
+          // Legg til mer hjelp hvis det er en database-feil
+          if (errorMessage.includes('database') || errorMessage.includes('Databasen') || errorMessage.includes('EC2')) {
+            errorMessage += '\n\n💡 Løsning: Kjør serveren på EC2 for å få tilgang til databasen. Se START_SERVER_EC2.md for instruksjoner.';
           }
           
           statusElement.textContent = errorMessage;

@@ -175,8 +175,8 @@ async function extractFromWebsite(orgnr: string, axios: any): Promise<Array<{ ye
       return await extractYearsFromApiFallback(orgnr, axios);
     }
     
-    // Ekstraher en chunk med data (samme som Python-koden)
-    const snippet = html.substring(regnskapsAarIdx, regnskapsAarIdx + 5000);
+    // Ekstraher en større chunk med data for å finne både år og journalnummer
+    const snippet = html.substring(regnskapsAarIdx, regnskapsAarIdx + 50000);
     
     // Finn alle år i snippet (pattern: year...YYYY)
     const yearPattern = /year.{1,10}?(\d{4})/g;
@@ -193,12 +193,71 @@ async function extractFromWebsite(orgnr: string, axios: any): Promise<Array<{ ye
     // Fjern duplikater og sorter
     const uniqueYears = [...new Set(foundYears)].sort((a, b) => b - a);
     
+    // Prøv å finne journalnummer for hvert år fra HTML-en
+    // Pattern: year...YYYY...journalnr...NNNNNNNNN eller journalnr...NNNNNNNNN...year...YYYY
+    const yearJournalMap = new Map<number, string>();
+    for (const year of uniqueYears) {
+      // Prøv flere patterns for å finne journalnummer knyttet til år
+      const patterns = [
+        new RegExp(`"year":${year}[^}]*?"journalnr":(\\d{10})`, 'g'),
+        new RegExp(`"journalnr":(\\d{10})[^}]*?"year":${year}`, 'g'),
+        new RegExp(`year[^}]*?${year}[^}]*?journalnr[^}]*?(\\d{10})`, 'g'),
+        new RegExp(`journalnr[^}]*?(\\d{10})[^}]*?year[^}]*?${year}`, 'g'),
+      ];
+      
+      for (const pattern of patterns) {
+        const journalMatches = snippet.matchAll(pattern);
+        for (const journalMatch of journalMatches) {
+          const journalNr = journalMatch[1];
+          if (journalNr && !yearJournalMap.has(year)) {
+            yearJournalMap.set(year, journalNr);
+            console.log(`[${orgnr}] Fant journalnummer ${journalNr} for år ${year} fra HTML`);
+            break;
+          }
+        }
+        if (yearJournalMap.has(year)) break;
+      }
+    }
+    
     if (uniqueYears.length === 0) {
       console.log(`[${orgnr}] Fant ingen år i regnskapsAarResponse`);
       return await extractYearsFromApiFallback(orgnr, axios);
     }
     
     console.log(`[${orgnr}] Fant ${uniqueYears.length} tilgjengelige år fra nettsiden: ${uniqueYears.join(', ')}`);
+    
+    // Prøv å hente regnskap via journalnummer hvis vi fant dem
+    // Bruk journalnummer for å hente spesifikke regnskap via API
+    if (yearJournalMap.size > 0) {
+      console.log(`[${orgnr}] Fant ${yearJournalMap.size} journalnummer i HTML, prøver å hente regnskap via journalnummer...`);
+      
+      for (const [year, journalNr] of yearJournalMap.entries()) {
+        try {
+          // Prøv å hente regnskap via journalnummer
+          const apiUrl = `https://data.brreg.no/regnskapsregisteret/regnskap/${orgnr}?journalnr=${journalNr}`;
+          const apiResponse = await axios.get(apiUrl, {
+            headers: { Accept: 'application/json' },
+            timeout: 10000,
+            validateStatus: (status: number) => status === 200 || status === 404,
+          });
+          
+          if (apiResponse.status === 200 && apiResponse.data) {
+            const data = Array.isArray(apiResponse.data) ? apiResponse.data[0] : apiResponse.data;
+            if (data && typeof data === 'object') {
+              const documents = (data.dokumenter || data.documents || []) as Array<Record<string, unknown>>;
+              entries.push({
+                year,
+                documents: Array.isArray(documents) ? documents : [],
+                raw: data as Record<string, unknown>,
+              });
+              console.log(`[${orgnr}] Fant regnskap for ${year} via journalnummer ${journalNr}`);
+            }
+          }
+        } catch (error) {
+          console.warn(`[${orgnr}] Feil ved henting av regnskap for ${year} via journalnummer:`, (error as Error).message);
+        }
+      }
+    }
     
     // Prøv å finne faktiske regnskap-data i HTML-en først
     // Søk etter JSON-strukturer som kan inneholde regnskap

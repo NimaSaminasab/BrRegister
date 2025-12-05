@@ -1,0 +1,374 @@
+<!doctype html>
+<html lang="nb">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>BR-register | Årsregnskap</title>
+    <style>
+      :root {
+        color-scheme: light dark;
+        font-family: system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+      }
+
+      body {
+        margin: 0;
+        padding: 2rem;
+        background: #f5f5f5;
+        color: #222;
+      }
+
+      h1 {
+        font-size: 1.75rem;
+        margin-bottom: 0.25rem;
+      }
+
+      p.subtitle {
+        margin-top: 0;
+        color: #555;
+      }
+
+      .controls {
+        margin: 1.5rem 0;
+        display: flex;
+        gap: 1rem;
+        align-items: center;
+        flex-wrap: wrap;
+      }
+
+      .controls input {
+        padding: 0.5rem;
+        border: 1px solid #ccc;
+        border-radius: 0.25rem;
+        font-size: 1rem;
+      }
+
+      .controls button {
+        padding: 0.5rem 1rem;
+        background: #0f172a;
+        color: #fff;
+        border: none;
+        border-radius: 0.25rem;
+        cursor: pointer;
+        font-size: 1rem;
+      }
+
+      .controls button:hover {
+        background: #1e293b;
+      }
+
+      .stats {
+        margin: 1rem 0;
+        padding: 1rem;
+        background: #e0f2fe;
+        border-radius: 0.5rem;
+        color: #0369a1;
+      }
+
+      table {
+        width: 100%;
+        border-collapse: collapse;
+        margin-top: 1.5rem;
+        background: #fff;
+        border-radius: 0.5rem;
+        overflow: hidden;
+        box-shadow: 0 6px 24px rgba(15, 23, 42, 0.08);
+      }
+
+      thead {
+        background: #0f172a;
+        color: #fff;
+        text-transform: uppercase;
+        letter-spacing: 0.08em;
+        font-size: 0.8rem;
+      }
+
+      th,
+      td {
+        padding: 0.85rem 1rem;
+        text-align: left;
+      }
+
+      tbody tr:nth-child(odd) {
+        background: #f8fafc;
+      }
+
+      tbody tr:hover {
+        background: #e0f2fe;
+      }
+
+      .badge {
+        display: inline-block;
+        padding: 0.25rem 0.5rem;
+        border-radius: 0.25rem;
+        font-size: 0.75rem;
+        font-weight: 600;
+        text-transform: uppercase;
+      }
+
+      .badge.json {
+        background: #10b981;
+        color: #fff;
+      }
+
+      .badge.pdf {
+        background: #f59e0b;
+        color: #fff;
+      }
+
+      .loading,
+      .error {
+        margin-top: 1.5rem;
+        padding: 1rem;
+        border-radius: 0.5rem;
+      }
+
+      .loading {
+        background: #e0f2fe;
+        color: #0369a1;
+      }
+
+      .error {
+        background: #fee2e2;
+        color: #b91c1c;
+      }
+
+      .group-header {
+        background: #1e293b;
+        color: #fff;
+        font-weight: 600;
+      }
+
+      .group-header td {
+        padding: 1rem;
+      }
+
+      @media (max-width: 768px) {
+        table {
+          display: block;
+          overflow-x: auto;
+          white-space: nowrap;
+        }
+
+        body {
+          padding: 1rem;
+        }
+      }
+    </style>
+  </head>
+  <body>
+    <header>
+      <h1>Årsregnskap</h1>
+      <p class="subtitle">Oversikt over alle årsregnskap i databasen</p>
+      <nav style="margin-top: 1rem;">
+        <a href="/" style="color: #0369a1; text-decoration: none; font-weight: 600;">
+          ← Tilbake til selskaper
+        </a>
+      </nav>
+    </header>
+
+    <div class="controls">
+      <label>
+        Filtrer på organisasjonsnummer:
+        <input type="text" id="orgnr-filter" placeholder="F.eks. 810034882" />
+      </label>
+      <button onclick="loadReports()">Last inn</button>
+      <button onclick="clearFilter()">Vis alle</button>
+    </div>
+
+    <div class="stats" id="stats" hidden></div>
+
+    <div class="loading" id="status">Henter årsregnskap…</div>
+
+    <table aria-label="Lista over årsregnskap" hidden id="reports-table">
+      <thead>
+        <tr>
+          <th scope="col">Organisasjonsnummer</th>
+          <th scope="col">Selskap</th>
+          <th scope="col">År</th>
+          <th scope="col">Kilde</th>
+          <th scope="col">Datatype</th>
+          <th scope="col">Scraped</th>
+        </tr>
+      </thead>
+      <tbody id="reports-body"></tbody>
+    </table>
+
+    <template id="empty-row">
+      <tr>
+        <td colspan="6" style="text-align: center; padding: 2rem">Ingen årsregnskap funnet.</td>
+      </tr>
+    </template>
+
+    <script>
+      const statusElement = document.getElementById('status');
+      const tableElement = document.getElementById('reports-table');
+      const tbodyElement = document.getElementById('reports-body');
+      const emptyRowTemplate = document.getElementById('empty-row');
+      const statsElement = document.getElementById('stats');
+      const orgnrFilter = document.getElementById('orgnr-filter');
+
+      const formatter = new Intl.DateTimeFormat('nb-NO', {
+        year: 'numeric',
+        month: 'long',
+        day: 'numeric',
+        hour: '2-digit',
+        minute: '2-digit',
+      });
+
+      function formatDate(value) {
+        if (!value) {
+          return '—';
+        }
+
+        const date = new Date(value);
+        return Number.isNaN(date.getTime()) ? value : formatter.format(date);
+      }
+
+      function getDataType(data) {
+        const raw = data?.raw;
+        if (raw?.pdfPath) {
+          return { type: 'pdf', label: 'PDF only' };
+        }
+        return { type: 'json', label: 'JSON data' };
+      }
+
+      function renderReports(reports) {
+        tbodyElement.innerHTML = '';
+
+        if (reports.length === 0) {
+          tbodyElement.appendChild(emptyRowTemplate.content.cloneNode(true));
+          return;
+        }
+
+        // Grupper etter organisasjonsnummer
+        const byOrg = {};
+        for (const report of reports) {
+          if (!byOrg[report.organisasjonsnummer]) {
+            byOrg[report.organisasjonsnummer] = [];
+          }
+          byOrg[report.organisasjonsnummer].push(report);
+        }
+
+        // Render grupperte rader
+        for (const [orgnr, orgReports] of Object.entries(byOrg)) {
+          // Header rad for organisasjonsnummer
+          const headerRow = document.createElement('tr');
+          headerRow.className = 'group-header';
+          const headerCell = document.createElement('td');
+          headerCell.colSpan = 6;
+          headerCell.textContent = `${orgnr} - ${orgReports[0].company_name || 'Ukjent navn'} (${orgReports.length} årsregnskap)`;
+          headerRow.appendChild(headerCell);
+          tbodyElement.appendChild(headerRow);
+
+          // Data rader
+          for (const report of orgReports) {
+            const tr = document.createElement('tr');
+
+            const orgnrCell = document.createElement('td');
+            orgnrCell.textContent = report.organisasjonsnummer;
+
+            const nameCell = document.createElement('td');
+            nameCell.textContent = report.company_name || '—';
+
+            const yearCell = document.createElement('td');
+            yearCell.textContent = report.ar;
+
+            const sourceCell = document.createElement('td');
+            sourceCell.textContent = report.data?.source || '—';
+
+            const dataTypeCell = document.createElement('td');
+            const dataType = getDataType(report.data);
+            const badge = document.createElement('span');
+            badge.className = `badge ${dataType.type}`;
+            badge.textContent = dataType.label;
+            dataTypeCell.appendChild(badge);
+
+            const scrapedCell = document.createElement('td');
+            scrapedCell.textContent = formatDate(report.scraped_at);
+
+            tr.append(orgnrCell, nameCell, yearCell, sourceCell, dataTypeCell, scrapedCell);
+            tbodyElement.appendChild(tr);
+          }
+        }
+      }
+
+      function updateStats(reports) {
+        const total = reports.length;
+        const byOrg = {};
+        for (const report of reports) {
+          byOrg[report.organisasjonsnummer] = (byOrg[report.organisasjonsnummer] || 0) + 1;
+        }
+        const uniqueOrgs = Object.keys(byOrg).length;
+
+        let jsonCount = 0;
+        let pdfCount = 0;
+        for (const report of reports) {
+          const dataType = getDataType(report.data);
+          if (dataType.type === 'json') {
+            jsonCount++;
+          } else {
+            pdfCount++;
+          }
+        }
+
+        statsElement.innerHTML = `
+          <strong>Statistikk:</strong> 
+          ${total} årsregnskap totalt | 
+          ${uniqueOrgs} unike selskaper | 
+          ${jsonCount} med JSON-data | 
+          ${pdfCount} kun PDF
+        `;
+        statsElement.hidden = false;
+      }
+
+      async function loadReports() {
+        const orgnr = orgnrFilter.value.trim() || undefined;
+        const url = orgnr 
+          ? `/api/annual-reports?orgnr=${encodeURIComponent(orgnr)}`
+          : '/api/annual-reports';
+
+        try {
+          statusElement.className = 'loading';
+          statusElement.textContent = 'Henter årsregnskap…';
+          statusElement.hidden = false;
+          tableElement.hidden = true;
+          statsElement.hidden = true;
+
+          const response = await fetch(url);
+
+          if (!response.ok) {
+            throw new Error(`Klarte ikke å hente årsregnskap (status ${response.status})`);
+          }
+
+          const reports = await response.json();
+
+          renderReports(reports);
+          updateStats(reports);
+
+          statusElement.hidden = true;
+          tableElement.hidden = false;
+        } catch (error) {
+          statusElement.className = 'error';
+          statusElement.textContent =
+            error instanceof Error ? error.message : 'Ukjent feil ved henting av årsregnskap';
+        }
+      }
+
+      function clearFilter() {
+        orgnrFilter.value = '';
+        loadReports();
+      }
+
+      // Load on Enter key
+      orgnrFilter.addEventListener('keypress', (e) => {
+        if (e.key === 'Enter') {
+          loadReports();
+        }
+      });
+
+      // Initial load
+      loadReports();
+    </script>
+  </body>
+</html>
+

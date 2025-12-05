@@ -226,103 +226,129 @@ async function extractFromWebsite(orgnr: string, axios: any): Promise<Array<{ ye
     
     console.log(`[${orgnr}] Fant ${uniqueYears.length} tilgjengelige år fra nettsiden: ${uniqueYears.join(', ')}`);
     
-    // Prøv å bruke Next.js Server Actions for å hente regnskap-data (samme som Python-koden)
-    // Finn Next.js build ID og Server Action ID fra HTML-en
-    const buildIdMatch = html.match(/"__NEXT_DATA__"[^}]*?"buildId":"([^"]+)"/);
-    const buildId = buildIdMatch ? buildIdMatch[1] : null;
+    // Bruk Next.js Server Actions for å hente regnskap-data (samme som Python-koden)
+    // Next.js Server Action ID for PDF download (samme som Python-koden)
+    // Merk: Dette returnerer PDF-data, men vi prøver å få JSON-data via API i stedet
+    const nextActionId = "7fe7b594d072ac1557da402414c7b7b1f94a43fe62";
+    const baseUrl = `https://virksomhet.brreg.no/nb/oppslag/enheter/${orgnr}`;
     
-    // Prøv å finne Server Action ID for å hente årsregnskap
-    // Next.js Server Actions bruker spesifikke endepunkter
-    if (buildId) {
-      console.log(`[${orgnr}] Fant Next.js build ID, prøver å hente regnskap via Server Actions...`);
+    console.log(`[${orgnr}] Prøver å hente regnskap via Next.js Server Actions (samme som Python-koden)...`);
+    
+    // Prøv å hente regnskap for hvert år via Next.js Server Actions
+    // Python-koden bruker POST med body: ["{orgnr}","{year}"]
+    // Men siden vi trenger JSON-data, ikke PDFs, prøver vi å hente via API i stedet
+    // Men først prøver vi å se om vi kan få JSON-data fra Server Action-responsen
+    
+    for (const year of uniqueYears) {
+      // Hopp over hvis vi allerede har regnskap for dette året
+      if (entries.some(e => e.year === year)) {
+        continue;
+      }
       
-      // Prøv å hente regnskap for hvert år via Next.js Server Actions
-      // Bruk samme tilnærming som Python-koden, men for JSON-data i stedet for PDFs
-      for (const year of uniqueYears) {
+      try {
+        // Prøv først å hente via Next.js Server Action (samme som Python-koden)
+        // Men vi prøver å få JSON-data, ikke PDF-data
+        const serverActionHeaders = {
+          'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+          'Accept': 'application/json, text/x-component, */*',
+          'Accept-Encoding': 'gzip, deflate, br',
+          'Accept-Language': 'nb-NO,nb;q=0.9,no;q=0.8,en;q=0.7',
+          'Referer': baseUrl,
+          'Next-Action': nextActionId,
+          'Content-Type': 'text/plain;charset=UTF-8',
+          'Origin': 'https://virksomhet.brreg.no',
+        };
+        
+        const body = JSON.stringify([orgnr, year.toString()]);
+        
         try {
-          // Prøv flere mulige endepunkter for Next.js Server Actions
-          const endpoints = [
-            `https://virksomhet.brreg.no/_next/data/${buildId}/nb/oppslag/enheter/${orgnr}.json?ar=${year}`,
-            `https://virksomhet.brreg.no/api/regnskap/${orgnr}/${year}`,
-            `https://virksomhet.brreg.no/api/regnskap?orgnr=${orgnr}&ar=${year}`,
-          ];
+          const serverActionResponse = await axios.post(baseUrl, body, {
+            headers: serverActionHeaders,
+            timeout: 120000,
+            validateStatus: (status: number) => status === 200 || status === 404 || status === 400,
+            responseType: 'arraybuffer', // For å kunne lese både JSON og PDF
+          });
           
-          for (const endpoint of endpoints) {
+          if (serverActionResponse.status === 200) {
+            // Server Action returnerer PDF-data, men vi prøver å se om det er JSON først
+            const responseData = serverActionResponse.data;
+            const responseText = Buffer.from(responseData).toString('utf-8');
+            
+            // Prøv å parse som JSON først
             try {
-              const response = await axios.get(endpoint, {
-                headers: {
-                  'Accept': 'application/json',
-                  'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-                  'Referer': `https://virksomhet.brreg.no/nb/oppslag/enheter/${orgnr}`,
-                },
-                timeout: 15000,
-                validateStatus: (status: number) => status === 200 || status === 404 || status === 400,
-              });
-              
-              if (response.status === 200 && response.data) {
-                // Parse responsen - kan være direkte JSON eller nested i Next.js-format
-                let regnskapData: Record<string, unknown> | null = null;
-                
-                if (typeof response.data === 'object' && response.data !== null) {
-                  // Hvis det er direkte regnskap-data
-                  if (response.data.regnskap || response.data.aarsregnskap || response.data.journalnr) {
-                    regnskapData = response.data as Record<string, unknown>;
-                  } 
-                  // Hvis det er Next.js page data format
-                  else if (response.data.pageProps) {
-                    const pageProps = (response.data.pageProps as Record<string, unknown>);
-                    if (pageProps.regnskap || pageProps.aarsregnskap) {
-                      regnskapData = pageProps as Record<string, unknown>;
-                    }
-                  }
-                  // Hvis det er en array
-                  else if (Array.isArray(response.data) && response.data.length > 0) {
-                    regnskapData = response.data[0] as Record<string, unknown>;
+              const jsonData = JSON.parse(responseText);
+              if (jsonData && typeof jsonData === 'object') {
+                // Hvis det er JSON-data, bruk det
+                const periode = jsonData.regnskapsperiode as Record<string, unknown> | undefined;
+                const tilDato = periode?.tilDato as string | undefined;
+                let actualYear: number | null = null;
+                if (tilDato && typeof tilDato === 'string') {
+                  const yearMatch = tilDato.match(/(\d{4})/);
+                  if (yearMatch) {
+                    actualYear = parseInt(yearMatch[1], 10);
                   }
                 }
-                
-                if (regnskapData) {
-                  const periode = regnskapData.regnskapsperiode as Record<string, unknown> | undefined;
-                  const tilDato = periode?.tilDato as string | undefined;
-                  let actualYear: number | null = null;
-                  if (tilDato && typeof tilDato === 'string') {
-                    const yearMatch = tilDato.match(/(\d{4})/);
-                    if (yearMatch) {
-                      actualYear = parseInt(yearMatch[1], 10);
-                    }
-                  }
-                  if (!actualYear) {
-                    actualYear = year;
-                  }
-                  
-                  // Sjekk om vi allerede har dette regnskapet
-                  const journalNr = regnskapData.journalnr || regnskapData.journalnummer || regnskapData.id;
-                  const existing = entries.find(e => {
-                    const eJournalNr = e.raw.journalnr || e.raw.journalnummer || e.raw.id;
-                    return eJournalNr === journalNr || e.year === actualYear;
-                  });
-                  
-                  if (!existing) {
-                    const documents = (regnskapData.dokumenter || regnskapData.documents || []) as Array<Record<string, unknown>>;
-                    entries.push({
-                      year: actualYear,
-                      documents: Array.isArray(documents) ? documents : [],
-                      raw: regnskapData,
-                    });
-                    console.log(`[${orgnr}] Fant regnskap for ${actualYear} via Next.js Server Action (journalnr: ${journalNr})`);
-                    break; // Hopp ut av endpoint-loop hvis vi fant data
-                  }
+                if (!actualYear) {
+                  actualYear = year;
                 }
+                
+                const documents = (jsonData.dokumenter || jsonData.documents || []) as Array<Record<string, unknown>>;
+                entries.push({
+                  year: actualYear,
+                  documents: Array.isArray(documents) ? documents : [],
+                  raw: jsonData as Record<string, unknown>,
+                });
+                console.log(`[${orgnr}] Fant regnskap for ${actualYear} via Next.js Server Action (JSON) (journalnr: ${jsonData.journalnr || jsonData.journalnummer || jsonData.id})`);
+                continue; // Hopp til neste år
               }
-            } catch (endpointError) {
-              // Prøv neste endpoint
-              continue;
+            } catch (jsonError) {
+              // Ikke JSON, sannsynligvis PDF-data - fortsett til API-metoden
             }
           }
-        } catch (error) {
-          // Ignorer feil for individuelle år
-          console.warn(`[${orgnr}] Feil ved henting av regnskap for ${year} via Server Action:`, (error as Error).message);
+        } catch (serverActionError) {
+          // Ignorer feil, prøv API-metoden i stedet
         }
+        
+        // Fallback: Prøv å hente via det offentlige API-et med journalnummer
+        // Hvis vi har journalnummer fra HTML-en, bruk det
+        if (yearJournalMap.has(year)) {
+          const journalNr = yearJournalMap.get(year);
+          if (journalNr) {
+            try {
+              const apiUrl = `https://data.brreg.no/regnskapsregisteret/regnskap/${orgnr}?journalnr=${journalNr}`;
+              const apiResponse = await axios.get(apiUrl, {
+                headers: { Accept: 'application/json' },
+                timeout: 10000,
+                validateStatus: (status: number) => status === 200 || status === 404,
+              });
+              
+              if (apiResponse.status === 200 && apiResponse.data) {
+                const data = Array.isArray(apiResponse.data) ? apiResponse.data[0] : apiResponse.data;
+                if (data && typeof data === 'object') {
+                  const documents = (data.dokumenter || data.documents || []) as Array<Record<string, unknown>>;
+                  entries.push({
+                    year,
+                    documents: Array.isArray(documents) ? documents : [],
+                    raw: data as Record<string, unknown>,
+                  });
+                  console.log(`[${orgnr}] Fant regnskap for ${year} via journalnummer ${journalNr}`);
+                  continue; // Hopp til neste år
+                }
+              }
+            } catch (apiError) {
+              // Ignorer feil
+            }
+          }
+        }
+        
+        // Siden Server Action returnerer PDF-data og ikke JSON-data,
+        // og API-et ikke støtter historiske regnskap, må vi akseptere at vi bare får det nyeste
+        // Men vi prøver fortsatt å hente via API for å se om det fungerer
+        console.log(`[${orgnr}] Kunne ikke hente regnskap for ${year} - Server Action returnerer PDF, ikke JSON`);
+        
+      } catch (error) {
+        // Ignorer feil for individuelle år
+        console.warn(`[${orgnr}] Feil ved henting av regnskap for ${year}:`, (error as Error).message);
       }
     }
     

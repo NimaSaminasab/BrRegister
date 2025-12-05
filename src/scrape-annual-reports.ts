@@ -236,10 +236,17 @@ async function downloadAndParsePdf(
       // Hvis vi ikke kan få JSON-data, prøv å ekstraktere årsresultat direkte fra PDF-teksten
       let extractedAarsresultat: number | null = null;
       
+      // Log en sample av PDF-teksten for debugging (første 500 tegn)
+      const textSample = pdfText.substring(0, 500);
+      console.log(`[${orgnr}] PDF-tekst sample for ${year} (${pdfText.length} tegn totalt): ${textSample.substring(0, 200)}...`);
+      
       // Prøv forskjellige patterns for å finne årsresultat i PDF-teksten
+      // Merk: PDF-teksten kan ha mellomrom på forskjellige måter (vanlig mellomrom, ikke-brytende mellomrom, etc.)
       const aarsresultatPatterns = [
-        // "Årsresultat: 348 197" eller "Årsresultat 348 197"
+        // "Årsresultat: 348 197" eller "Årsresultat 348 197" (med mellomrom i tall)
         /årsresultat[:\s]+([-]?\d{1,3}(?:\s?\d{3})*(?:\s?\d{3})*)/i,
+        // "Årsresultat: 348197" (uten mellomrom)
+        /årsresultat[:\s]+([-]?\d{4,12})/i,
         // "Resultat for året: 348 197"
         /resultat\s+for\s+året[:\s]+([-]?\d{1,3}(?:\s?\d{3})*(?:\s?\d{3})*)/i,
         // "Årsresultatet er 348 197"
@@ -250,17 +257,21 @@ async function downloadAndParsePdf(
         /resultat[:\s]+([-]?\d{1,3}(?:\s?\d{3})*(?:\s?\d{3})*)/i,
         // "Årsresultat" på en linje, tall på neste linje
         /årsresultat\s*\n\s*([-]?\d{1,3}(?:\s?\d{3})*(?:\s?\d{3})*)/i,
+        // "Årsresultat" med punktum som tusen-separator: "348.197"
+        /årsresultat[:\s]+([-]?\d{1,3}(?:\.\d{3})*(?:\.\d{3})*)/i,
+        // "Årsresultat" med komma som desimal-separator (kan være feil formatert): "348,197"
+        /årsresultat[:\s]+([-]?\d{1,3}(?:,\d{3})*(?:,\d{3})*)/i,
       ];
       
       for (const pattern of aarsresultatPatterns) {
         const match = pdfText.match(pattern);
         if (match && match[1]) {
-          // Fjern mellomrom og konverter til tall
-          const cleanedValue = match[1].replace(/\s+/g, '');
+          // Fjern mellomrom, punktum og komma (som tusen-separatorer) og konverter til tall
+          let cleanedValue = match[1].replace(/\s+/g, '').replace(/\./g, '').replace(/,/g, '');
           const parsedValue = parseInt(cleanedValue, 10);
           if (!isNaN(parsedValue)) {
             extractedAarsresultat = parsedValue;
-            console.log(`[${orgnr}] Fant årsresultat ${extractedAarsresultat} i PDF-teksten for ${year}`);
+            console.log(`[${orgnr}] ✅ Fant årsresultat ${extractedAarsresultat} i PDF-teksten for ${year} (pattern match)`);
             break;
           }
         }
@@ -269,20 +280,23 @@ async function downloadAndParsePdf(
       // Hvis vi ikke fant årsresultat med patterns, prøv å finne det i tabell-format
       // Mange årsregnskap har årsresultat i en tabell
       if (extractedAarsresultat === null) {
+        console.log(`[${orgnr}] Prøver å finne årsresultat i tabell-format for ${year}...`);
         // Prøv å finne tall som ser ut som årsresultat (stort tall, ofte i nærheten av "resultat" eller "år")
         const lines = pdfText.split('\n');
         for (let i = 0; i < lines.length; i++) {
           const line = lines[i].toLowerCase();
-          if (line.includes('årsresultat') || line.includes('resultat') || (line.includes('år') && line.includes('resultat'))) {
-            // Se på neste linjer for å finne et tall
-            for (let j = i; j < Math.min(i + 5, lines.length); j++) {
+          if (line.includes('årsresultat') || (line.includes('resultat') && (line.includes('år') || line.includes('året')))) {
+            console.log(`[${orgnr}] Fant "resultat"-linje ${i + 1} for ${year}: "${line.substring(0, 100)}"`);
+            // Se på samme linje og neste linjer for å finne et tall
+            for (let j = Math.max(0, i - 1); j < Math.min(i + 5, lines.length); j++) {
+              // Prøv både med og uten mellomrom
               const numberMatch = lines[j].match(/([-]?\d{1,3}(?:\s?\d{3})*(?:\s?\d{3})*)/);
               if (numberMatch) {
-                const cleanedValue = numberMatch[1].replace(/\s+/g, '');
+                let cleanedValue = numberMatch[1].replace(/\s+/g, '').replace(/\./g, '').replace(/,/g, '');
                 const parsedValue = parseInt(cleanedValue, 10);
-                if (!isNaN(parsedValue) && Math.abs(parsedValue) > 1000) { // Årsresultat er vanligvis et stort tall
+                if (!isNaN(parsedValue) && Math.abs(parsedValue) > 100) { // Årsresultat er vanligvis et stort tall (minst 100)
                   extractedAarsresultat = parsedValue;
-                  console.log(`[${orgnr}] Fant årsresultat ${extractedAarsresultat} i PDF-teksten (linje ${j + 1}) for ${year}`);
+                  console.log(`[${orgnr}] ✅ Fant årsresultat ${extractedAarsresultat} i PDF-teksten (linje ${j + 1}) for ${year}`);
                   break;
                 }
               }
@@ -290,6 +304,10 @@ async function downloadAndParsePdf(
             if (extractedAarsresultat !== null) break;
           }
         }
+      }
+      
+      if (extractedAarsresultat === null) {
+        console.log(`[${orgnr}] ⚠️ Kunne ikke finne årsresultat i PDF-teksten for ${year}`);
       }
       
       // Hvis vi ikke kan få JSON-data, men har PDF-en, lagre PDF-stien som "raw data"

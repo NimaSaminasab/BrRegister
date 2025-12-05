@@ -389,16 +389,67 @@ async function extractFromWebsite(orgnr: string, axios: any): Promise<Array<{ ye
       }
     }
     
-    // Prøv å finne faktiske regnskap-data i HTML-en først
-    // Søk etter JSON-strukturer som kan inneholde regnskap
+    // Prøv å finne faktiske regnskap-data i HTML-en
+    // Next.js embedder ofte data i __NEXT_DATA__ script tag
     const $ = cheerio.load(html);
     const scriptTags = $('script').toArray();
     const seenJournalNumbers = new Set<string | number>();
     
+    // Først prøv å finne __NEXT_DATA__
     for (const script of scriptTags) {
       const content = $(script).html() || '';
       
-      // Prøv å finne JSON-data som inneholder regnskap
+      // Prøv å finne __NEXT_DATA__ som ofte inneholder alle data
+      if (content.includes('__NEXT_DATA__')) {
+        try {
+          // Extract JSON from __NEXT_DATA__ = {...}
+          const nextDataMatch = content.match(/__NEXT_DATA__\s*=\s*({[\s\S]+?});/);
+          if (nextDataMatch) {
+            const nextData = JSON.parse(nextDataMatch[1]);
+            
+            // Søk i pageProps for regnskap-data
+            if (nextData.props && nextData.props.pageProps) {
+              const pageProps = nextData.props.pageProps as Record<string, unknown>;
+              
+              // Prøv å finne regnskap i pageProps
+              const regnskap = findRegnskapInData(pageProps, orgnr);
+              if (regnskap && regnskap.length > 0) {
+                for (const rs of regnskap) {
+                  const periode = rs.regnskapsperiode as Record<string, unknown> | undefined;
+                  const tilDato = periode?.tilDato as string | undefined;
+                  let year: number | null = null;
+                  if (tilDato && typeof tilDato === 'string') {
+                    const yearMatch = tilDato.match(/(\d{4})/);
+                    if (yearMatch) {
+                      year = parseInt(yearMatch[1], 10);
+                    }
+                  }
+                  if (year && uniqueYears.includes(year)) {
+                    const journalNr = rs.journalnr || rs.journalnummer || rs.id;
+                    if (journalNr && (typeof journalNr === 'string' || typeof journalNr === 'number') && seenJournalNumbers.has(journalNr)) {
+                      continue; // Skip duplikat
+                    }
+                    if (journalNr && (typeof journalNr === 'string' || typeof journalNr === 'number')) {
+                      seenJournalNumbers.add(journalNr);
+                    }
+                    const documents = (rs.dokumenter || rs.documents || []) as Array<Record<string, unknown>>;
+                    entries.push({
+                      year,
+                      documents: Array.isArray(documents) ? documents : [],
+                      raw: rs,
+                    });
+                    console.log(`[${orgnr}] Fant regnskap for ${year} fra __NEXT_DATA__ (journalnr: ${journalNr})`);
+                  }
+                }
+              }
+            }
+          }
+        } catch (e) {
+          // Ignorer JSON-parse-feil
+        }
+      }
+      
+      // Prøv også å finne JSON-data som inneholder regnskap direkte
       if (content.includes('regnskap') || content.includes('aarsregnskap') || content.includes('årsregnskap')) {
         try {
           // Prøv å ekstrahere JSON-objekt - søk etter større JSON-strukturer

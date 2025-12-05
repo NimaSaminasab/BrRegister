@@ -363,7 +363,7 @@
               // Ignore JSON parse errors
             }
             const error = new Error(errorMessage);
-            (error as any).response = response;
+            error.response = response;
             throw error;
           }
 

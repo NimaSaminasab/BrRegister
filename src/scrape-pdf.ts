@@ -20,7 +20,36 @@ export async function scrapePdfForYear(
   year: number
 ): Promise<{ aarsresultat: number | null; success: boolean; message: string }> {
   try {
-    // Hent PDF via Next.js Server Action (samme som i scrape-annual-reports.ts)
+    // Først: Prøv å hente via API (raskere og mer pålitelig)
+    console.log(`[${orgnr}] Prøver først å hente via API for ${year}...`);
+    try {
+      const apiUrl = `https://data.brreg.no/regnskapsregisteret/regnskap/${orgnr}?ar=${year}`;
+      const apiResponse = await axios.get(apiUrl, {
+        headers: { Accept: 'application/json' },
+        timeout: 10000,
+        validateStatus: (status: number) => status === 200 || status === 404,
+      });
+      
+      if (apiResponse.status === 200 && apiResponse.data) {
+        const data = Array.isArray(apiResponse.data) ? apiResponse.data[0] : apiResponse.data;
+        if (data && typeof data === 'object') {
+          const aarsresultat = extractAarsresultatFromJson(data);
+          if (aarsresultat !== null) {
+            console.log(`[${orgnr}] ✅ Fant årsresultat ${aarsresultat} via API for ${year}`);
+            await updateAnnualReportInDatabase(orgnr, year, aarsresultat);
+            return {
+              aarsresultat,
+              success: true,
+              message: `Fant årsresultat ${aarsresultat} via API`,
+            };
+          }
+        }
+      }
+    } catch (apiError) {
+      console.log(`[${orgnr}] API-henting feilet for ${year}, prøver PDF-download:`, (apiError as Error).message);
+    }
+    
+    // Hvis API ikke fungerte, prøv PDF-download via Next.js Server Action
     const nextActionId = "7fe7b594d072ac1557da402414c7b7b1f94a43fe62";
     const baseUrl = `https://virksomhet.brreg.no/nb/oppslag/enheter/${orgnr}`;
     
@@ -46,8 +75,12 @@ export async function scrapePdfForYear(
       responseType: 'arraybuffer',
     });
     
+    console.log(`[${orgnr}] Server Action respons status: ${serverActionResponse.status}`);
+    console.log(`[${orgnr}] Response data størrelse: ${serverActionResponse.data ? (serverActionResponse.data as ArrayBuffer).byteLength : 0} bytes`);
+    
     if (serverActionResponse.status !== 200) {
       const errorText = Buffer.from(serverActionResponse.data).toString('utf-8').substring(0, 200);
+      console.error(`[${orgnr}] Server returnerte feil status ${serverActionResponse.status}: ${errorText}`);
       return {
         aarsresultat: null,
         success: false,
@@ -56,6 +89,22 @@ export async function scrapePdfForYear(
     }
     
     const responseData = Buffer.from(serverActionResponse.data);
+    
+    // Log første del av responsen for debugging
+    const responsePreview = responseData.toString('utf-8', 0, Math.min(200, responseData.length));
+    console.log(`[${orgnr}] Response preview (første 200 tegn): ${responsePreview}`);
+    
+    // Sjekk om det er en PDF
+    if (!responseData.toString('utf-8', 0, 4).includes('%PDF') && responseData.length < 1000) {
+      // Det ser ikke ut som en PDF, kan være en feilmelding
+      const fullResponse = responseData.toString('utf-8');
+      console.error(`[${orgnr}] Respons ser ikke ut som en PDF. Full respons: ${fullResponse.substring(0, 500)}`);
+      return {
+        aarsresultat: null,
+        success: false,
+        message: `Server returnerte ikke en PDF. Respons: ${fullResponse.substring(0, 200)}`,
+      };
+    }
     
     // Prøv å parse som JSON først
     try {
@@ -158,8 +207,13 @@ async function parsePdfAndExtractAarsresultat(
     
     try {
       // Parse PDF
+      console.log(`[${orgnr}] Parser PDF (størrelse: ${pdfData.length} bytes)...`);
       const pdfDoc = await pdf(pdfData);
       const pdfText = pdfDoc.text;
+      
+      console.log(`[${orgnr}] PDF parsed. Tekst lengde: ${pdfText.length} tegn`);
+      console.log(`[${orgnr}] PDF info: ${pdfDoc.info ? JSON.stringify(pdfDoc.info).substring(0, 200) : 'ingen info'}`);
+      console.log(`[${orgnr}] PDF metadata: ${pdfDoc.metadata ? JSON.stringify(pdfDoc.metadata).substring(0, 200) : 'ingen metadata'}`);
       
       // Ekstraher årsresultat fra PDF-teksten
       const aarsresultat = extractAarsresultatFromPdfText(pdfText, orgnr, year);

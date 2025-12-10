@@ -324,14 +324,94 @@ async function parsePdfAndExtractAarsresultat(
       console.log(`[${orgnr}] PDF info: ${pdfDoc.info ? JSON.stringify(pdfDoc.info).substring(0, 200) : 'ingen info'}`);
       console.log(`[${orgnr}] PDF metadata: ${pdfDoc.metadata ? JSON.stringify(pdfDoc.metadata).substring(0, 200) : 'ingen metadata'}`);
       
-      // Hvis PDF-teksten er for kort, kan det være at parsing feilet
+      // Hvis PDF-teksten er for kort, kan det være at parsing feilet eller at det er en scanned PDF
       if (pdfText.length < 50) {
-        console.warn(`[${orgnr}] PDF-tekst er veldig kort (${pdfText.length} tegn). Dette kan tyde på at PDF-en er tom eller parsing feilet.`);
+        console.warn(`[${orgnr}] PDF-tekst er veldig kort (${pdfText.length} tegn). Dette kan tyde på at PDF-en er tom, parsing feilet, eller at det er en scanned PDF.`);
         console.warn(`[${orgnr}] PDF-tekst innhold: "${pdfText}"`);
         console.warn(`[${orgnr}] PDF-tekst (hex): ${Buffer.from(pdfText).toString('hex').substring(0, 100)}`);
         
         // Prøv å se om PDF-en faktisk inneholder noe data
         const pdfHasContent = pdfData.length > 10000; // PDF-er er vanligvis større enn 10KB
+        
+        // Hvis PDF-en er stor men har lite tekst, kan det være en scanned PDF
+        // Prøv å finne journalnummer i PDF-metadata eller info
+        if (pdfHasContent && pdfDoc.info) {
+          console.log(`[${orgnr}] PDF er stor (${pdfData.length} bytes) men har lite tekst. Prøver å finne journalnummer i PDF-metadata...`);
+          const info = pdfDoc.info as Record<string, unknown>;
+          
+          // Søk etter journalnummer i PDF-info/metadata
+          let journalNr: string | null = null;
+          for (const [key, value] of Object.entries(info)) {
+            if (typeof value === 'string' && /^\d{10}$/.test(value)) {
+              journalNr = value;
+              console.log(`[${orgnr}] Fant journalnummer ${journalNr} i PDF-metadata (${key})`);
+              break;
+            }
+            // Prøv også å søke i verdien som tekst
+            if (typeof value === 'string' && value.length > 0) {
+              const journalMatch = value.match(/(\d{10})/);
+              if (journalMatch) {
+                journalNr = journalMatch[1];
+                console.log(`[${orgnr}] Fant journalnummer ${journalNr} i PDF-metadata (${key}: ${value})`);
+                break;
+              }
+            }
+          }
+          
+          // Prøv også i metadata
+          if (!journalNr && pdfDoc.metadata) {
+            const metadata = pdfDoc.metadata as Record<string, unknown>;
+            for (const [key, value] of Object.entries(metadata)) {
+              if (typeof value === 'string' && /^\d{10}$/.test(value)) {
+                journalNr = value;
+                console.log(`[${orgnr}] Fant journalnummer ${journalNr} i PDF-metadata (${key})`);
+                break;
+              }
+            }
+          }
+          
+          // Hvis vi fant journalnummer, prøv å hente via API
+          if (journalNr) {
+            try {
+              const apiUrl = `https://data.brreg.no/regnskapsregisteret/regnskap/${orgnr}?journalnr=${journalNr}`;
+              const apiResponse = await axios.get(apiUrl, {
+                headers: { Accept: 'application/json' },
+                timeout: 10000,
+                validateStatus: (status: number) => status === 200 || status === 404,
+              });
+              
+              if (apiResponse.status === 200 && apiResponse.data) {
+                const data = Array.isArray(apiResponse.data) ? apiResponse.data[0] : apiResponse.data;
+                if (data && typeof data === 'object') {
+                  // Sjekk at det er for riktig år
+                  const periode = data.regnskapsperiode as Record<string, unknown> | undefined;
+                  const tilDato = periode?.tilDato as string | undefined;
+                  let actualYear: number | null = null;
+                  
+                  if (tilDato && typeof tilDato === 'string') {
+                    const yearMatch = tilDato.match(/(\d{4})/);
+                    if (yearMatch) {
+                      actualYear = parseInt(yearMatch[1], 10);
+                    }
+                  }
+                  
+                  if (actualYear === year || actualYear === null) {
+                    const aarsresultat = extractAarsresultatFromJson(data);
+                    if (aarsresultat !== null) {
+                      console.log(`[${orgnr}] ✅ Fant årsresultat ${aarsresultat} via API med journalnummer fra PDF-metadata for ${year}`);
+                      return {
+                        aarsresultat,
+                        message: `Fant årsresultat ${aarsresultat} via API med journalnummer fra PDF-metadata`,
+                      };
+                    }
+                  }
+                }
+              }
+            } catch (apiError) {
+              console.log(`[${orgnr}] Feil ved API-henting med journalnummer fra PDF-metadata:`, (apiError as Error).message);
+            }
+          }
+        }
         
         // Vis hele PDF-teksten i feilmeldingen (kan være viktig for debugging)
         const fullText = pdfText.replace(/"/g, '\\"').replace(/\n/g, '\\n').substring(0, 200);

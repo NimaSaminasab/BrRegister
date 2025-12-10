@@ -5,7 +5,7 @@
   "main": "dist/src/index.js",
   "scripts": {
     "build": "tsc",
-    "build:prod": "cross-env NODE_OPTIONS=--max-old-space-size=4096 tsc",
+    "build:prod": "NODE_OPTIONS=--max-old-space-size=4096 tsc",
     "start": "node dist/src/index.js",
     "fetch": "ts-node --transpile-only src/fetch-companies.ts",
     "sync": "ts-node --transpile-only src/sync-to-dynamodb.ts",

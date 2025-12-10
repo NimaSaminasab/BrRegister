@@ -648,8 +648,23 @@ async function performOCR(pdfPath: string, orgnr: string, year: number): Promise
       height: 2000,
     };
     
-    const convert = fromPath(pdfPath, options);
-    const imageResult = await convert(1, { responseType: 'image' }); // Konverter første side
+    let convert;
+    try {
+      convert = fromPath(pdfPath, options);
+    } catch (convertError) {
+      console.error(`[${orgnr}] Feil ved opprettelse av PDF-konverterer:`, (convertError as Error).message);
+      console.error(`[${orgnr}] Dette kan tyde på at ImageMagick ikke er installert. Installer med: sudo dnf install -y ImageMagick`);
+      return null;
+    }
+    
+    let imageResult;
+    try {
+      imageResult = await convert(1, { responseType: 'image' }); // Konverter første side
+    } catch (convertError) {
+      console.error(`[${orgnr}] Feil ved konvertering av PDF til bilde:`, (convertError as Error).message);
+      console.error(`[${orgnr}] Dette kan tyde på at ImageMagick ikke er installert. Installer med: sudo dnf install -y ImageMagick`);
+      return null;
+    }
     
     // pdf2pic returnerer et objekt med path eller buffer
     let imagePath: string;

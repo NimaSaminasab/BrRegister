@@ -162,6 +162,58 @@ export async function scrapePdfForYear(
       };
     }
     
+    // Hvis PDF-parsing feilet, prøv å se om vi kan finne journalnummer og hente via API
+    if (pdfResult.message.includes('for kort') || pdfResult.message.includes('tom')) {
+      console.log(`[${orgnr}] PDF-parsing feilet for ${year}, prøver å finne journalnummer og hente via API...`);
+      
+      // Prøv å hente alle regnskap for organisasjonsnummeret og finne det riktige året
+      try {
+        const allRegnskapUrl = `https://data.brreg.no/regnskapsregisteret/regnskap/${orgnr}`;
+        const allRegnskapResponse = await axios.get(allRegnskapUrl, {
+          headers: { Accept: 'application/json' },
+          timeout: 10000,
+          validateStatus: (status: number) => status === 200 || status === 404,
+        });
+        
+        if (allRegnskapResponse.status === 200 && allRegnskapResponse.data) {
+          const allRegnskap = Array.isArray(allRegnskapResponse.data) 
+            ? allRegnskapResponse.data 
+            : [allRegnskapResponse.data];
+          
+          // Finn regnskap for det spesifikke året
+          for (const regnskap of allRegnskap) {
+            if (!regnskap || typeof regnskap !== 'object') continue;
+            
+            const periode = regnskap.regnskapsperiode as Record<string, unknown> | undefined;
+            const tilDato = periode?.tilDato as string | undefined;
+            let regnskapYear: number | null = null;
+            
+            if (tilDato && typeof tilDato === 'string') {
+              const yearMatch = tilDato.match(/(\d{4})/);
+              if (yearMatch) {
+                regnskapYear = parseInt(yearMatch[1], 10);
+              }
+            }
+            
+            if (regnskapYear === year) {
+              const aarsresultat = extractAarsresultatFromJson(regnskap);
+              if (aarsresultat !== null) {
+                console.log(`[${orgnr}] ✅ Fant årsresultat ${aarsresultat} via alle regnskap API for ${year}`);
+                await updateAnnualReportInDatabase(orgnr, year, aarsresultat);
+                return {
+                  aarsresultat,
+                  success: true,
+                  message: `Fant årsresultat ${aarsresultat} via alle regnskap API`,
+                };
+              }
+            }
+          }
+        }
+      } catch (fallbackError) {
+        console.log(`[${orgnr}] Fallback API-henting feilet:`, (fallbackError as Error).message);
+      }
+    }
+    
     return {
       aarsresultat: null,
       success: false,
@@ -276,9 +328,17 @@ async function parsePdfAndExtractAarsresultat(
       if (pdfText.length < 50) {
         console.warn(`[${orgnr}] PDF-tekst er veldig kort (${pdfText.length} tegn). Dette kan tyde på at PDF-en er tom eller parsing feilet.`);
         console.warn(`[${orgnr}] PDF-tekst innhold: "${pdfText}"`);
+        console.warn(`[${orgnr}] PDF-tekst (hex): ${Buffer.from(pdfText).toString('hex').substring(0, 100)}`);
+        
+        // Prøv å se om PDF-en faktisk inneholder noe data
+        const pdfHasContent = pdfData.length > 10000; // PDF-er er vanligvis større enn 10KB
+        const message = pdfHasContent 
+          ? `PDF-tekst er for kort (${pdfText.length} tegn: "${pdfText}"). PDF-filen er ${pdfData.length} bytes, men inneholder lite eller ingen tekst. Dette kan tyde på at PDF-en kun inneholder bilder/scanned dokumenter.`
+          : `PDF-tekst er for kort (${pdfText.length} tegn: "${pdfText}"). PDF-filen er også liten (${pdfData.length} bytes), noe som tyder på at PDF-en ikke ble lastet ned korrekt.`;
+        
         return {
           aarsresultat: null,
-          message: `PDF-tekst er for kort (${pdfText.length} tegn). PDF-en kan være tom eller parsing feilet.`,
+          message,
         };
       }
       

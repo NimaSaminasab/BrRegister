@@ -176,9 +176,25 @@ async function parsePdfAndExtractAarsresultat(
         };
       }
       
+      // Hvis vi ikke fant årsresultat, gi mer informasjon
+      const textLength = pdfText.length;
+      const hasResultat = pdfText.toLowerCase().includes('resultat');
+      const hasRegnskap = pdfText.toLowerCase().includes('regnskap');
+      const hasAarsresultat = pdfText.toLowerCase().includes('årsresultat');
+      
+      let debugInfo = `PDF-tekst lengde: ${textLength} tegn. `;
+      debugInfo += `Inneholder "resultat": ${hasResultat}, "regnskap": ${hasRegnskap}, "årsresultat": ${hasAarsresultat}. `;
+      
+      // Prøv å finne noen tall i PDF-en for debugging
+      const numbers = pdfText.match(/([-]?\d{1,3}(?:\s?\d{3})*(?:\s?\d{3})*)/g);
+      if (numbers && numbers.length > 0) {
+        const sampleNumbers = numbers.slice(0, 5).join(', ');
+        debugInfo += `Fant tall i PDF: ${sampleNumbers}...`;
+      }
+      
       return {
         aarsresultat: null,
-        message: 'Kunne ikke finne årsresultat i PDF-teksten',
+        message: `Kunne ikke finne årsresultat i PDF-teksten. ${debugInfo}`,
       };
     } catch (parseError) {
       // Slett temp-fil hvis parsing feiler
@@ -203,6 +219,10 @@ async function parsePdfAndExtractAarsresultat(
  * Ekstrakterer årsresultat fra PDF-tekst
  */
 function extractAarsresultatFromPdfText(pdfText: string, orgnr: string, year: number): number | null {
+  // Log første del av PDF-teksten for debugging
+  const textSample = pdfText.substring(0, Math.min(1000, pdfText.length));
+  console.log(`[${orgnr}] PDF-tekst sample for ${year} (${pdfText.length} tegn totalt):\n${textSample.substring(0, 500)}...`);
+  
   // Prøv forskjellige patterns for å finne årsresultat i PDF-teksten
   const aarsresultatPatterns = [
     // "Årsresultat: 348 197" eller "Årsresultat 348 197" (med mellomrom i tall)
@@ -223,6 +243,12 @@ function extractAarsresultatFromPdfText(pdfText: string, orgnr: string, year: nu
     /årsresultat[:\s]+([-]?\d{1,3}(?:\.\d{3})*(?:\.\d{3})*)/i,
     // "Årsresultat" med komma som desimal-separator (kan være feil formatert): "348,197"
     /årsresultat[:\s]+([-]?\d{1,3}(?:,\d{3})*(?:,\d{3})*)/i,
+    // "Resultatregnskap" - ofte brukt i norske årsregnskap
+    /resultatregnskap[^\d]*([-]?\d{1,3}(?:\s?\d{3})*(?:\s?\d{3})*)/i,
+    // "Resultat etter skatt" eller "Resultat etter skatt:"
+    /resultat\s+etter\s+skatt[:\s]+([-]?\d{1,3}(?:\s?\d{3})*(?:\s?\d{3})*)/i,
+    // "Årsresultat" med parenteser: "Årsresultat (348 197)"
+    /årsresultat[^:]*\(([-]?\d{1,3}(?:\s?\d{3})*(?:\s?\d{3})*)\)/i,
   ];
   
   for (const pattern of aarsresultatPatterns) {
@@ -240,11 +266,23 @@ function extractAarsresultatFromPdfText(pdfText: string, orgnr: string, year: nu
   
   // Hvis vi ikke fant årsresultat med patterns, prøv å finne det i tabell-format
   const lines = pdfText.split('\n');
+  console.log(`[${orgnr}] Søker i ${lines.length} linjer for årsresultat...`);
+  
+  // Søk etter linjer som inneholder resultat-relaterte ord
+  const resultatKeywords = ['årsresultat', 'resultatregnskap', 'nettoresultat', 'resultat etter skatt', 'resultat for året'];
+  
   for (let i = 0; i < lines.length; i++) {
     const line = lines[i].toLowerCase();
-    if (line.includes('årsresultat') || (line.includes('resultat') && (line.includes('år') || line.includes('året')))) {
+    
+    // Sjekk om linjen inneholder noen av nøkkelordene
+    const hasKeyword = resultatKeywords.some(keyword => line.includes(keyword));
+    
+    if (hasKeyword || (line.includes('resultat') && (line.includes('år') || line.includes('året')))) {
+      console.log(`[${orgnr}] Fant "resultat"-linje ${i + 1} for ${year}: "${line.substring(0, 100)}"`);
+      
       // Se på samme linje og neste linjer for å finne et tall
       for (let j = Math.max(0, i - 1); j < Math.min(i + 5, lines.length); j++) {
+        // Prøv å finne tall med tusen-separatorer (mellomrom, punktum, komma)
         const numberMatch = lines[j].match(/([-]?\d{1,3}(?:\s?\d{3})*(?:\s?\d{3})*)/);
         if (numberMatch) {
           let cleanedValue = numberMatch[1].replace(/\s+/g, '').replace(/\./g, '').replace(/,/g, '');
@@ -258,6 +296,31 @@ function extractAarsresultatFromPdfText(pdfText: string, orgnr: string, year: nu
     }
   }
   
+  // Siste forsøk: Søk etter store tall i nærheten av "resultat" eller "regnskap"
+  console.log(`[${orgnr}] Prøver siste forsøk: søker etter store tall nær "resultat" eller "regnskap"...`);
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i].toLowerCase();
+    if (line.includes('resultat') || line.includes('regnskap')) {
+      // Se på linjer i nærheten
+      for (let j = Math.max(0, i - 2); j < Math.min(i + 3, lines.length); j++) {
+        // Prøv å finne alle tall i linjen
+        const allNumbers = lines[j].match(/([-]?\d{1,3}(?:\s?\d{3})*(?:\s?\d{3})*)/g);
+        if (allNumbers) {
+          for (const numStr of allNumbers) {
+            let cleanedValue = numStr.replace(/\s+/g, '').replace(/\./g, '').replace(/,/g, '');
+            const parsedValue = parseInt(cleanedValue, 10);
+            // Årsresultat er vanligvis et stort tall (minst 1000, men kan være negativt)
+            if (!isNaN(parsedValue) && Math.abs(parsedValue) > 1000) {
+              console.log(`[${orgnr}] ✅ Fant mulig årsresultat ${parsedValue} i PDF-teksten (linje ${j + 1}, nær "resultat/regnskap") for ${year}`);
+              return parsedValue;
+            }
+          }
+        }
+      }
+    }
+  }
+  
+  console.log(`[${orgnr}] ⚠️ Kunne ikke finne årsresultat i PDF-teksten for ${year}`);
   return null;
 }
 

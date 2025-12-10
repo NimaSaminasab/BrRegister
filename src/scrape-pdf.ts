@@ -342,9 +342,14 @@ async function parsePdfAndExtractAarsresultat(
           
           // Prøv OCR på første siden av PDF-en
           try {
+            console.log(`[${orgnr}] Kaller performOCR for ${year}...`);
             const ocrText = await performOCR(tempPdfPath, orgnr, year);
+            console.log(`[${orgnr}] performOCR returnerte: ${ocrText ? `${ocrText.length} tegn` : 'null'}`);
+            
             if (ocrText && ocrText.length > 100) {
               console.log(`[${orgnr}] OCR ekstraherte ${ocrText.length} tegn fra PDF for ${year}`);
+              console.log(`[${orgnr}] OCR-tekst sample (første 500 tegn): ${ocrText.substring(0, 500)}`);
+              
               const aarsresultat = extractAarsresultatFromPdfText(ocrText, orgnr, year);
               if (aarsresultat !== null) {
                 // Oppdater database med det ekstraherte årsresultatet
@@ -359,14 +364,22 @@ async function parsePdfAndExtractAarsresultat(
                   message: `Fant årsresultat ${aarsresultat} via OCR`,
                 };
               } else {
-                console.log(`[${orgnr}] OCR ekstraherte tekst, men kunne ikke finne årsresultat`);
+                console.log(`[${orgnr}] OCR ekstraherte tekst, men kunne ikke finne årsresultat i teksten`);
+                console.log(`[${orgnr}] OCR-tekst inneholder "resultat": ${ocrText.toLowerCase().includes('resultat')}`);
+                console.log(`[${orgnr}] OCR-tekst inneholder "årsresultat": ${ocrText.toLowerCase().includes('årsresultat')}`);
               }
             } else {
               console.log(`[${orgnr}] OCR ekstraherte lite tekst (${ocrText?.length || 0} tegn)`);
+              if (ocrText && ocrText.length > 0) {
+                console.log(`[${orgnr}] OCR-tekst (første 200 tegn): ${ocrText.substring(0, 200)}`);
+              }
             }
           } catch (ocrError) {
-            console.warn(`[${orgnr}] OCR feilet:`, (ocrError as Error).message);
+            console.error(`[${orgnr}] OCR feilet med feil:`, (ocrError as Error).message);
+            console.error(`[${orgnr}] OCR feil stack:`, (ocrError as Error).stack);
           }
+        } else {
+          console.log(`[${orgnr}] PDF er ikke stor nok (${pdfData.length} bytes) for OCR`);
         }
         
         // Prøv å finne journalnummer i PDF-metadata eller info
@@ -448,7 +461,7 @@ async function parsePdfAndExtractAarsresultat(
           }
         }
         
-        // Vis hele PDF-teksten i feilmeldingen (kan være viktig for debugging)
+        // Hvis OCR ikke fungerte, gi en informativ feilmelding
         const fullText = pdfText.replace(/"/g, '\\"').replace(/\n/g, '\\n').substring(0, 200);
         const hexPreview = Buffer.from(pdfText).toString('hex').substring(0, 100);
         
@@ -457,7 +470,8 @@ async function parsePdfAndExtractAarsresultat(
         message += `Hex: ${hexPreview}... `;
         
         if (pdfHasContent) {
-          message += `PDF-filen er ${pdfData.length} bytes, men inneholder lite eller ingen tekst. Dette kan tyde på at PDF-en kun inneholder bilder/scanned dokumenter som krever OCR.`;
+          message += `PDF-filen er ${pdfData.length} bytes, men inneholder lite eller ingen tekst. Dette kan tyde på at PDF-en kun inneholder bilder/scanned dokumenter. `;
+          message += `OCR ble prøvd, men kunne ikke ekstraktere årsresultat. Sjekk server-loggen for detaljer.`;
         } else {
           message += `PDF-filen er også liten (${pdfData.length} bytes), noe som tyder på at PDF-en ikke ble lastet ned korrekt eller er en feilmelding.`;
         }

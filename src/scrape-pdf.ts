@@ -332,9 +332,20 @@ async function parsePdfAndExtractAarsresultat(
         
         // Prøv å se om PDF-en faktisk inneholder noe data
         const pdfHasContent = pdfData.length > 10000; // PDF-er er vanligvis større enn 10KB
-        const message = pdfHasContent 
-          ? `PDF-tekst er for kort (${pdfText.length} tegn: "${pdfText}"). PDF-filen er ${pdfData.length} bytes, men inneholder lite eller ingen tekst. Dette kan tyde på at PDF-en kun inneholder bilder/scanned dokumenter.`
-          : `PDF-tekst er for kort (${pdfText.length} tegn: "${pdfText}"). PDF-filen er også liten (${pdfData.length} bytes), noe som tyder på at PDF-en ikke ble lastet ned korrekt.`;
+        
+        // Vis hele PDF-teksten i feilmeldingen (kan være viktig for debugging)
+        const fullText = pdfText.replace(/"/g, '\\"').replace(/\n/g, '\\n').substring(0, 200);
+        const hexPreview = Buffer.from(pdfText).toString('hex').substring(0, 100);
+        
+        let message = `PDF-tekst er for kort (${pdfText.length} tegn). `;
+        message += `Innhold: "${fullText}". `;
+        message += `Hex: ${hexPreview}... `;
+        
+        if (pdfHasContent) {
+          message += `PDF-filen er ${pdfData.length} bytes, men inneholder lite eller ingen tekst. Dette kan tyde på at PDF-en kun inneholder bilder/scanned dokumenter som krever OCR.`;
+        } else {
+          message += `PDF-filen er også liten (${pdfData.length} bytes), noe som tyder på at PDF-en ikke ble lastet ned korrekt eller er en feilmelding.`;
+        }
         
         return {
           aarsresultat: null,

@@ -2,6 +2,8 @@ import * as fs from 'fs';
 import * as path from 'path';
 import pdf from 'pdf-parse';
 import axios from 'axios';
+import { createWorker } from 'tesseract.js';
+import { fromPath } from 'pdf2pic';
 import { createPostgresClient, getPostgresEnvConfig } from './postgres';
 
 // Temp-mappe for PDF-filer
@@ -334,6 +336,39 @@ async function parsePdfAndExtractAarsresultat(
         const pdfHasContent = pdfData.length > 10000; // PDF-er er vanligvis større enn 10KB
         
         // Hvis PDF-en er stor men har lite tekst, kan det være en scanned PDF
+        // Prøv OCR først, deretter søk etter journalnummer i metadata
+        if (pdfHasContent) {
+          console.log(`[${orgnr}] PDF er stor (${pdfData.length} bytes) men har lite tekst. Prøver OCR...`);
+          
+          // Prøv OCR på første siden av PDF-en
+          try {
+            const ocrText = await performOCR(tempPdfPath, orgnr, year);
+            if (ocrText && ocrText.length > 100) {
+              console.log(`[${orgnr}] OCR ekstraherte ${ocrText.length} tegn fra PDF for ${year}`);
+              const aarsresultat = extractAarsresultatFromPdfText(ocrText, orgnr, year);
+              if (aarsresultat !== null) {
+                // Oppdater database med det ekstraherte årsresultatet
+                await updateAnnualReportInDatabase(orgnr, year, aarsresultat);
+                
+                // Slett temp-fil
+                if (fs.existsSync(tempPdfPath)) {
+                  fs.unlinkSync(tempPdfPath);
+                }
+                return {
+                  aarsresultat,
+                  message: `Fant årsresultat ${aarsresultat} via OCR`,
+                };
+              } else {
+                console.log(`[${orgnr}] OCR ekstraherte tekst, men kunne ikke finne årsresultat`);
+              }
+            } else {
+              console.log(`[${orgnr}] OCR ekstraherte lite tekst (${ocrText?.length || 0} tegn)`);
+            }
+          } catch (ocrError) {
+            console.warn(`[${orgnr}] OCR feilet:`, (ocrError as Error).message);
+          }
+        }
+        
         // Prøv å finne journalnummer i PDF-metadata eller info
         if (pdfHasContent && pdfDoc.info) {
           console.log(`[${orgnr}] PDF er stor (${pdfData.length} bytes) men har lite tekst. Prøver å finne journalnummer i PDF-metadata...`);
@@ -594,6 +629,73 @@ function extractAarsresultatFromPdfText(pdfText: string, orgnr: string, year: nu
   
   console.log(`[${orgnr}] ⚠️ Kunne ikke finne årsresultat i PDF-teksten for ${year}`);
   return null;
+}
+
+/**
+ * Utfører OCR på PDF for å ekstraktere tekst fra scanned dokumenter
+ */
+async function performOCR(pdfPath: string, orgnr: string, year: number): Promise<string | null> {
+  try {
+    console.log(`[${orgnr}] Starter OCR på PDF for ${year}...`);
+    
+    // Konverter første siden av PDF til bilde
+    const options = {
+      density: 300,           // Høy oppløsning for bedre OCR
+      saveFilename: `${orgnr}_${year}`,
+      savePath: PDF_TEMP_DIR,
+      format: 'png',
+      width: 2000,
+      height: 2000,
+    };
+    
+    const convert = fromPath(pdfPath, options);
+    const imageResult = await convert(1, { responseType: 'image' }); // Konverter første side
+    
+    // pdf2pic returnerer et objekt med path eller buffer
+    let imagePath: string;
+    if (typeof imageResult === 'string') {
+      imagePath = imageResult;
+    } else if (imageResult && typeof imageResult === 'object' && 'path' in imageResult) {
+      imagePath = (imageResult as { path: string }).path;
+    } else {
+      console.warn(`[${orgnr}] Kunne ikke konvertere PDF til bilde for ${year}`);
+      return null;
+    }
+    
+    if (!imagePath || !fs.existsSync(imagePath)) {
+      console.warn(`[${orgnr}] Bilde-fil eksisterer ikke: ${imagePath}`);
+      return null;
+    }
+    
+    console.log(`[${orgnr}] PDF konvertert til bilde: ${imagePath}`);
+    
+    // Utfør OCR på bildet med norsk språk
+    const worker = await createWorker('nor', 1, {
+      logger: (m: { status: string; progress: number }) => {
+        if (m.status === 'recognizing text') {
+          console.log(`[${orgnr}] OCR progress: ${Math.round(m.progress * 100)}%`);
+        }
+      },
+    });
+    
+    const { data: { text } } = await worker.recognize(imagePath);
+    await worker.terminate();
+    
+    // Rydd opp bilde-fil
+    if (fs.existsSync(imagePath)) {
+      try {
+        fs.unlinkSync(imagePath);
+      } catch (e) {
+        // Ignorer feil ved sletting
+      }
+    }
+    
+    console.log(`[${orgnr}] OCR fullført. Ekstraherte ${text.length} tegn fra PDF for ${year}`);
+    return text;
+  } catch (error) {
+    console.error(`[${orgnr}] Feil ved OCR for ${year}:`, (error as Error).message);
+    return null;
+  }
 }
 
 /**

@@ -29,14 +29,16 @@
   "dependencies": {
     "@aws-sdk/client-dynamodb": "^3.490.0",
     "@aws-sdk/lib-dynamodb": "^3.490.0",
-    "cheerio": "^1.0.0-rc.12",
-    "pdf-parse": "^1.1.1",
-    "puppeteer": "^23.11.1",
     "axios": "^1.6.2",
+    "cheerio": "^1.0.0-rc.12",
     "dotenv": "^16.3.1",
     "express": "^5.1.0",
+    "pdf-parse": "^1.1.1",
+    "pdf2pic": "^3.2.0",
     "pg": "^8.16.3",
-    "stream-json": "^1.7.5"
+    "puppeteer": "^23.11.1",
+    "stream-json": "^1.7.5",
+    "tesseract.js": "^5.1.1"
   },
   "devDependencies": {
     "@types/cheerio": "^0.22.35",

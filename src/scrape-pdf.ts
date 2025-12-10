@@ -186,27 +186,48 @@ async function parsePdfAndExtractAarsresultat(
   pdfBuffer: Buffer
 ): Promise<{ aarsresultat: number | null; message: string }> {
   try {
+    console.log(`[${orgnr}] Parser PDF-buffer (størrelse: ${pdfBuffer.length} bytes) for ${year}...`);
+    
     // Sjekk om responsen inneholder feilmelding
     const responseText = pdfBuffer.toString('utf-8', 0, Math.min(500, pdfBuffer.length));
+    console.log(`[${orgnr}] Første 500 tegn av respons: ${responseText.substring(0, 200)}...`);
+    
     if (responseText.includes('Server action not found') || responseText.includes('error') || responseText.includes('Error')) {
+      const fullError = responseText.substring(0, 200);
+      console.error(`[${orgnr}] Server Action returnerte feilmelding: ${fullError}`);
       return {
         aarsresultat: null,
-        message: `Server Action returnerte feilmelding: ${responseText.substring(0, 100)}`,
+        message: `Server Action returnerte feilmelding: ${fullError}`,
       };
     }
     
     // Finn PDF i responsen
     const pdfStart = pdfBuffer.indexOf('%PDF');
+    console.log(`[${orgnr}] PDF start posisjon: ${pdfStart}`);
+    
     if (pdfStart === -1) {
-      return {
-        aarsresultat: null,
-        message: 'Ingen PDF funnet i respons',
-      };
+      // Prøv å se om det er en feilmelding
+      if (responseText.length < 500) {
+        console.warn(`[${orgnr}] Ingen PDF funnet i respons for ${year}, respons: ${responseText.substring(0, 200)}`);
+        return {
+          aarsresultat: null,
+          message: `Ingen PDF funnet i respons. Respons: ${responseText.substring(0, 200)}`,
+        };
+      } else {
+        console.warn(`[${orgnr}] Ingen PDF funnet i respons for ${year} (respons størrelse: ${pdfBuffer.length} bytes)`);
+        return {
+          aarsresultat: null,
+          message: `Ingen PDF funnet i respons (størrelse: ${pdfBuffer.length} bytes)`,
+        };
+      }
     }
     
     // Finn %%EOF marker
     const eofPos = pdfBuffer.lastIndexOf('%%EOF');
+    console.log(`[${orgnr}] PDF EOF posisjon: ${eofPos}`);
+    
     if (eofPos === -1) {
+      console.warn(`[${orgnr}] PDF er ufullstendig (ingen %%EOF marker) for ${year}`);
       return {
         aarsresultat: null,
         message: 'PDF er ufullstendig (ingen %%EOF marker)',
@@ -214,13 +235,15 @@ async function parsePdfAndExtractAarsresultat(
     }
     
     // Ekstraher PDF
-    const pdfData = pdfBuffer.subarray(pdfStart, eofPos + 6);
+    const pdfData = pdfBuffer.subarray(pdfStart, eofPos + 6); // +6 for "%%EOF\n"
+    console.log(`[${orgnr}] Ekstrahert PDF-data størrelse: ${pdfData.length} bytes`);
     
     // Valider at det er en PDF
     if (!pdfData.toString('utf-8', 0, 4).startsWith('%PDF') || pdfData.length < 1000) {
+      console.warn(`[${orgnr}] Ugyldig PDF-data for ${year} (størrelse: ${pdfData.length} bytes)`);
       return {
         aarsresultat: null,
-        message: 'Ugyldig PDF-data',
+        message: `Ugyldig PDF-data (størrelse: ${pdfData.length} bytes, minimum 1000 bytes forventet)`,
       };
     }
     
@@ -231,12 +254,33 @@ async function parsePdfAndExtractAarsresultat(
     try {
       // Parse PDF
       console.log(`[${orgnr}] Parser PDF (størrelse: ${pdfData.length} bytes)...`);
-      const pdfDoc = await pdf(pdfData);
+      
+      let pdfDoc;
+      try {
+        pdfDoc = await pdf(pdfData);
+      } catch (parseError) {
+        console.error(`[${orgnr}] Feil ved PDF-parsing:`, (parseError as Error).message);
+        return {
+          aarsresultat: null,
+          message: `Feil ved PDF-parsing: ${(parseError as Error).message}`,
+        };
+      }
+      
       const pdfText = pdfDoc.text;
       
       console.log(`[${orgnr}] PDF parsed. Tekst lengde: ${pdfText.length} tegn`);
       console.log(`[${orgnr}] PDF info: ${pdfDoc.info ? JSON.stringify(pdfDoc.info).substring(0, 200) : 'ingen info'}`);
       console.log(`[${orgnr}] PDF metadata: ${pdfDoc.metadata ? JSON.stringify(pdfDoc.metadata).substring(0, 200) : 'ingen metadata'}`);
+      
+      // Hvis PDF-teksten er for kort, kan det være at parsing feilet
+      if (pdfText.length < 50) {
+        console.warn(`[${orgnr}] PDF-tekst er veldig kort (${pdfText.length} tegn). Dette kan tyde på at PDF-en er tom eller parsing feilet.`);
+        console.warn(`[${orgnr}] PDF-tekst innhold: "${pdfText}"`);
+        return {
+          aarsresultat: null,
+          message: `PDF-tekst er for kort (${pdfText.length} tegn). PDF-en kan være tom eller parsing feilet.`,
+        };
+      }
       
       // Ekstraher årsresultat fra PDF-teksten
       const aarsresultat = extractAarsresultatFromPdfText(pdfText, orgnr, year);

@@ -33,15 +33,38 @@ export async function scrapePdfForYear(
       if (apiResponse.status === 200 && apiResponse.data) {
         const data = Array.isArray(apiResponse.data) ? apiResponse.data[0] : apiResponse.data;
         if (data && typeof data === 'object') {
-          const aarsresultat = extractAarsresultatFromJson(data);
-          if (aarsresultat !== null) {
-            console.log(`[${orgnr}] ✅ Fant årsresultat ${aarsresultat} via API for ${year}`);
-            await updateAnnualReportInDatabase(orgnr, year, aarsresultat);
-            return {
-              aarsresultat,
-              success: true,
-              message: `Fant årsresultat ${aarsresultat} via API`,
-            };
+          // VIKTIG: Sjekk at dette faktisk er regnskap for det riktige året
+          const periode = data.regnskapsperiode as Record<string, unknown> | undefined;
+          const tilDato = periode?.tilDato as string | undefined;
+          let actualYear: number | null = null;
+          
+          if (tilDato && typeof tilDato === 'string') {
+            const yearMatch = tilDato.match(/(\d{4})/);
+            if (yearMatch) {
+              actualYear = parseInt(yearMatch[1], 10);
+            }
+          }
+          
+          // Hvis faktisk år ikke matcher ønsket år, hopp over denne dataen
+          if (actualYear !== null && actualYear !== year) {
+            console.log(`[${orgnr}] ⚠️ API returnerte regnskap for ${actualYear}, men vi søkte etter ${year}. Prøver PDF-download i stedet.`);
+            // Fortsett til PDF-download
+          } else {
+            // Året matcher (eller vi kunne ikke bestemme året), prøv å hente årsresultat
+            const aarsresultat = extractAarsresultatFromJson(data);
+            if (aarsresultat !== null) {
+              const yearInfo = actualYear ? ` (bekreftet år: ${actualYear})` : '';
+              console.log(`[${orgnr}] ✅ Fant årsresultat ${aarsresultat} via API for ${year}${yearInfo}`);
+              await updateAnnualReportInDatabase(orgnr, year, aarsresultat);
+              return {
+                aarsresultat,
+                success: true,
+                message: `Fant årsresultat ${aarsresultat} via API`,
+              };
+            } else {
+              console.log(`[${orgnr}] API returnerte data for ${year}, men kunne ikke finne årsresultat. Prøver PDF-download.`);
+              // Fortsett til PDF-download
+            }
           }
         }
       }

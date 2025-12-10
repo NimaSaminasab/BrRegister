@@ -4,6 +4,7 @@ import * as path from 'path';
 
 import { fetchCompaniesFromPostgres } from './print-postgres-companies';
 import { fetchAnnualReportsFromPostgres } from './fetch-annual-reports';
+import { scrapePdfForYear } from './scrape-pdf';
 
 dotenv.config();
 
@@ -11,6 +12,9 @@ const DEFAULT_PORT = Number(process.env.PORT ?? '3000');
 
 export async function createApp() {
   const app = express();
+
+  // Parse JSON bodies
+  app.use(express.json());
 
   // Serve static files from public directory
   // __dirname in compiled code is dist/src, so we need to go up two levels
@@ -51,6 +55,53 @@ export async function createApp() {
         message: errorMessage,
         error: err.message,
         details: isTimeout || isConnectionError ? 'Database connection failed' : undefined
+      });
+    }
+  });
+
+  app.post('/api/scrape-pdf', async (req: Request, res: Response) => {
+    try {
+      const { orgnr, year } = req.body;
+      
+      if (!orgnr || !year) {
+        return res.status(400).json({ 
+          message: 'Mangler organisasjonsnummer eller år',
+          error: 'orgnr og year er påkrevd'
+        });
+      }
+      
+      const orgnrClean = orgnr.replace(/\D+/g, '');
+      const yearNum = parseInt(year.toString(), 10);
+      
+      if (!orgnrClean || isNaN(yearNum) || yearNum < 1990 || yearNum > new Date().getFullYear() + 1) {
+        return res.status(400).json({ 
+          message: 'Ugyldig organisasjonsnummer eller år',
+          error: 'orgnr må være et gyldig organisasjonsnummer og year må være et gyldig årstall'
+        });
+      }
+      
+      console.log(`Scraping PDF for ${orgnrClean}, år ${yearNum}...`);
+      const result = await scrapePdfForYear(orgnrClean, yearNum);
+      
+      if (result.success && result.aarsresultat !== null) {
+        res.json({
+          success: true,
+          aarsresultat: result.aarsresultat,
+          message: result.message,
+        });
+      } else {
+        res.status(404).json({
+          success: false,
+          aarsresultat: null,
+          message: result.message,
+        });
+      }
+    } catch (error) {
+      console.error('Failed to scrape PDF', error);
+      const err = error as Error;
+      res.status(500).json({ 
+        message: 'Kunne ikke scrape PDF',
+        error: err.message
       });
     }
   });

@@ -103,3 +103,4 @@ kill -9 <PID>
 ### "Database connection timeout"
 Dette er normalt hvis du prøver å koble til fra lokal maskin. Serveren må kjøre på EC2 for å ha tilgang til databasen.
 
+

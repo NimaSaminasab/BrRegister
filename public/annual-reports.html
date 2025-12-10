@@ -270,7 +270,17 @@
               // Formater som norsk tall med tusen-separator
               aarsresultatCell.textContent = new Intl.NumberFormat('nb-NO').format(aarsresultat);
             } else {
-              aarsresultatCell.textContent = '—';
+              // Hvis årsresultat mangler og det er PDF, legg til knapp for å scrape
+              const dataType = getDataType(report.data);
+              if (dataType.type === 'pdf') {
+                const scrapeButton = document.createElement('button');
+                scrapeButton.textContent = 'Scrape PDF';
+                scrapeButton.style.cssText = 'padding: 0.25rem 0.5rem; background: #0369a1; color: #fff; border: none; border-radius: 0.25rem; cursor: pointer; font-size: 0.75rem;';
+                scrapeButton.onclick = () => scrapePdf(report.organisasjonsnummer, report.ar, scrapeButton, aarsresultatCell);
+                aarsresultatCell.appendChild(scrapeButton);
+              } else {
+                aarsresultatCell.textContent = '—';
+              }
             }
 
             const dataTypeCell = document.createElement('td');
@@ -411,6 +421,51 @@
           loadReports();
         }
       });
+
+      async function scrapePdf(orgnr, year, button, cell) {
+        const originalText = button.textContent;
+        button.disabled = true;
+        button.textContent = 'Scraper...';
+        button.style.background = '#64748b';
+        
+        try {
+          const response = await fetch('/api/scrape-pdf', {
+            method: 'POST',
+            headers: {
+              'Content-Type': 'application/json',
+            },
+            body: JSON.stringify({ orgnr, year }),
+          });
+          
+          const result = await response.json();
+          
+          if (result.success && result.aarsresultat !== null) {
+            // Oppdater cellen med årsresultatet
+            cell.innerHTML = '';
+            cell.textContent = new Intl.NumberFormat('nb-NO').format(result.aarsresultat);
+            // Last inn rapporter på nytt for å oppdatere visningen
+            setTimeout(() => loadReports(), 1000);
+          } else {
+            button.textContent = 'Feilet';
+            button.style.background = '#dc2626';
+            setTimeout(() => {
+              button.textContent = originalText;
+              button.style.background = '#0369a1';
+              button.disabled = false;
+            }, 3000);
+            alert(`Kunne ikke scrape PDF: ${result.message || 'Ukjent feil'}`);
+          }
+        } catch (error) {
+          button.textContent = 'Feilet';
+          button.style.background = '#dc2626';
+          setTimeout(() => {
+            button.textContent = originalText;
+            button.style.background = '#0369a1';
+            button.disabled = false;
+          }, 3000);
+          alert(`Feil ved scraping: ${error.message}`);
+        }
+      }
 
       // Initial load
       loadReports();

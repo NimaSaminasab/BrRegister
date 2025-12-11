@@ -60,10 +60,16 @@ export async function createApp() {
   });
 
   app.post('/api/scrape-pdf', async (req: Request, res: Response) => {
+    console.log('📥 POST /api/scrape-pdf mottatt');
+    console.log('Request body:', JSON.stringify(req.body));
+    
     try {
       const { orgnr, year } = req.body;
       
+      console.log(`Parsed: orgnr=${orgnr}, year=${year}`);
+      
       if (!orgnr || !year) {
+        console.log('❌ Mangler organisasjonsnummer eller år');
         return res.status(400).json({ 
           message: 'Mangler organisasjonsnummer eller år',
           error: 'orgnr og year er påkrevd'
@@ -73,15 +79,19 @@ export async function createApp() {
       const orgnrClean = orgnr.replace(/\D+/g, '');
       const yearNum = parseInt(year.toString(), 10);
       
+      console.log(`Cleaned: orgnrClean=${orgnrClean}, yearNum=${yearNum}`);
+      
       if (!orgnrClean || isNaN(yearNum) || yearNum < 1990 || yearNum > new Date().getFullYear() + 1) {
+        console.log('❌ Ugyldig organisasjonsnummer eller år');
         return res.status(400).json({ 
           message: 'Ugyldig organisasjonsnummer eller år',
           error: 'orgnr må være et gyldig organisasjonsnummer og year må være et gyldig årstall'
         });
       }
       
-      console.log(`Scraping PDF for ${orgnrClean}, år ${yearNum}...`);
+      console.log(`✅ Starter scraping PDF for ${orgnrClean}, år ${yearNum}...`);
       const result = await scrapePdfForYear(orgnrClean, yearNum);
+      console.log(`✅ Scraping fullført. Resultat:`, JSON.stringify(result));
       
       if (result.success && result.aarsresultat !== null) {
         res.json({

@@ -545,8 +545,16 @@ function extractAarsresultatFromPdfText(pdfText: string, orgnr: string, year: nu
   console.log(`[${orgnr}] PDF-tekst sample for ${year} (${pdfText.length} tegn totalt):\n${textSample.substring(0, 500)}...`);
   
   // Prøv forskjellige patterns for å finne årsresultat i PDF-teksten
+  // OCR kan ha feil, så vi må være mer fleksible med tegn
   const aarsresultatPatterns = [
     // "Årsresultat: 348 197" eller "Årsresultat 348 197" (med mellomrom i tall)
+    // OCR kan lese "Å" som "A" eller "a", så vi prøver flere varianter
+    /[aå]rsresultat[:\s]+([-]?\d{1,3}(?:\s?\d{3})*(?:\s?\d{3})*)/i,
+    /[aå]rsresultat[:\s]+([-]?\d{4,12})/i,
+    // OCR kan lese "Årsresultat" som "Arsresultat" eller "Aarsresultat"
+    /a[aå]rsresultat[:\s]+([-]?\d{1,3}(?:\s?\d{3})*(?:\s?\d{3})*)/i,
+    /a[aå]rsresultat[:\s]+([-]?\d{4,12})/i,
+    // "Årsresultat: 348 197" eller "Årsresultat 348 197" (med mellomrom i tall) - original
     /årsresultat[:\s]+([-]?\d{1,3}(?:\s?\d{3})*(?:\s?\d{3})*)/i,
     // "Årsresultat: 348197" (uten mellomrom)
     /årsresultat[:\s]+([-]?\d{4,12})/i,
@@ -590,7 +598,14 @@ function extractAarsresultatFromPdfText(pdfText: string, orgnr: string, year: nu
   console.log(`[${orgnr}] Søker i ${lines.length} linjer for årsresultat...`);
   
   // Søk etter linjer som inneholder resultat-relaterte ord
-  const resultatKeywords = ['årsresultat', 'resultatregnskap', 'nettoresultat', 'resultat etter skatt', 'resultat for året'];
+  // OCR kan ha feil, så vi må være mer fleksible
+  const resultatKeywords = [
+    'årsresultat', 'arsresultat', 'aarsresultat', // OCR kan lese "Å" som "A"
+    'resultatregnskap', 'resultat regnskap',
+    'nettoresultat', 'netto resultat',
+    'resultat etter skatt', 'resultat etter skatt',
+    'resultat for året', 'resultat for aret', 'resultat for aaret'
+  ];
   
   for (let i = 0; i < lines.length; i++) {
     const line = lines[i].toLowerCase();
@@ -598,7 +613,15 @@ function extractAarsresultatFromPdfText(pdfText: string, orgnr: string, year: nu
     // Sjekk om linjen inneholder noen av nøkkelordene
     const hasKeyword = resultatKeywords.some(keyword => line.includes(keyword));
     
-    if (hasKeyword || (line.includes('resultat') && (line.includes('år') || line.includes('året')))) {
+    // OCR kan lese "år" som "ar" eller "a r", så vi prøver flere varianter
+    const hasResultatAndYear = line.includes('resultat') && (
+      line.includes('år') || 
+      line.includes('aret') || 
+      line.includes('a r') ||
+      line.includes('ar')
+    );
+    
+    if (hasKeyword || hasResultatAndYear) {
       console.log(`[${orgnr}] Fant "resultat"-linje ${i + 1} for ${year}: "${line.substring(0, 100)}"`);
       
       // Se på samme linje og neste linjer for å finne et tall

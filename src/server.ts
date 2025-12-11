@@ -82,10 +82,11 @@ export async function createApp() {
       console.log(`\n[${new Date().toISOString()}] ✅ Scraping fullført. Resultat:`, JSON.stringify(result));
       console.log(`${'='.repeat(80)}\n`);
       
-      if (result.success && result.aarsresultat !== null) {
+      if (result.success && (result.aarsresultat !== null || result.salgsinntekt !== null)) {
         res.json({
           success: true,
           aarsresultat: result.aarsresultat,
+          salgsinntekt: result.salgsinntekt,
           message: result.message,
         });
       } else {
@@ -94,6 +95,7 @@ export async function createApp() {
         res.status(200).json({
           success: false,
           aarsresultat: null,
+          salgsinntekt: null,
           message: result.message,
         });
       }

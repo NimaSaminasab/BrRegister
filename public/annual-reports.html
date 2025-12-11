@@ -429,6 +429,7 @@
         button.style.background = '#64748b';
         
         try {
+          console.log('Sending POST request to /api/scrape-pdf', { orgnr, year });
           const response = await fetch('/api/scrape-pdf', {
             method: 'POST',
             headers: {
@@ -437,7 +438,17 @@
             body: JSON.stringify({ orgnr, year }),
           });
           
+          console.log('Response status:', response.status, response.statusText);
+          console.log('Response headers:', [...response.headers.entries()]);
+          
+          if (!response.ok) {
+            const errorText = await response.text();
+            console.error('Error response:', errorText);
+            throw new Error(`HTTP ${response.status}: ${errorText}`);
+          }
+          
           const result = await response.json();
+          console.log('Response result:', result);
           
           if (result.success && result.aarsresultat !== null) {
             // Oppdater cellen med årsresultatet

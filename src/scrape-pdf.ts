@@ -696,6 +696,12 @@ function extractSalgsinntektFromPdfText(pdfText: string, orgnr: string, year: nu
     /salgsinntekt\s*\n\s*([-]?\d{1,3}(?:\s?\d{3})*(?:\s?\d{3})*)/i,
     // "Omsetning" på en linje, tall på neste linje
     /omsetning\s*\n\s*([-]?\d{1,3}(?:\s?\d{3})*(?:\s?\d{3})*)/i,
+    // "Driftsinntekt" - ofte brukt i norske årsregnskap
+    /driftsinntekt[:\s]+([-]?\d{1,3}(?:\s?\d{3})*(?:\s?\d{3})*)/i,
+    // "Totalinntekt" eller "Total inntekt"
+    /total\s*inntekt[:\s]+([-]?\d{1,3}(?:\s?\d{3})*(?:\s?\d{3})*)/i,
+    // "Inntekt" med store tall (vanligvis salgsinntekt er størst)
+    /inntekt[:\s]+([-]?\d{1,3}(?:\s?\d{3})*(?:\s?\d{3})*)/i,
   ];
   
   for (const pattern of salgsinntektPatterns) {
@@ -716,7 +722,7 @@ function extractSalgsinntektFromPdfText(pdfText: string, orgnr: string, year: nu
   console.log(`[${orgnr}] Søker i ${lines.length} linjer for salgsinntekt...`);
   
   // Søk etter linjer som inneholder salgsinntekt-relaterte ord
-  const salgsinntektKeywords = ['salgsinntekt', 'omsetning'];
+  const salgsinntektKeywords = ['salgsinntekt', 'omsetning', 'driftsinntekt', 'total inntekt', 'totalinntekt'];
   
   for (let i = 0; i < lines.length; i++) {
     const line = lines[i].toLowerCase();

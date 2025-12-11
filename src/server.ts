@@ -13,9 +13,10 @@ const DEFAULT_PORT = Number(process.env.PORT ?? '3000');
 export async function createApp() {
   const app = express();
 
-  // Log all requests for debugging
+  // Log all requests for debugging - MUST be first middleware
   app.use((req, res, next) => {
-    console.log(`[${new Date().toISOString()}] ${req.method} ${req.path}`);
+    console.log(`[${new Date().toISOString()}] ${req.method} ${req.path} - Request received`);
+    console.log(`  Headers:`, JSON.stringify(req.headers));
     next();
   });
 
@@ -93,11 +94,18 @@ export async function createApp() {
     }
   });
 
-  // Mount API router
+  // Mount API router - MUST be before static files
   app.use('/api', apiRouter);
+  console.log('✅ API router mounted at /api');
 
-  // Deretter static file serving
-  app.use(express.static(publicPath));
+  // Deretter static file serving - only handles GET requests for files
+  app.use(express.static(publicPath, { 
+    // Don't handle POST/PUT/DELETE requests
+    setHeaders: (res, path) => {
+      console.log(`Static file serving: ${path}`);
+    }
+  }));
+  console.log('✅ Static files mounted');
 
   app.get('/healthz', (_req: Request, res: Response) => {
     res.json({ status: 'ok' });

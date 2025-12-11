@@ -30,6 +30,12 @@ export async function createApp() {
   // API routes - må være før static files
   const apiRouter = express.Router();
   
+  // Test route to verify API router is working
+  apiRouter.get('/test', (_req: Request, res: Response) => {
+    console.log('✅ GET /api/test mottatt');
+    res.json({ message: 'API router fungerer!', timestamp: new Date().toISOString() });
+  });
+  
   apiRouter.post('/scrape-pdf', async (req: Request, res: Response) => {
     console.log('📥 POST /api/scrape-pdf mottatt');
     console.log('Request body:', JSON.stringify(req.body));

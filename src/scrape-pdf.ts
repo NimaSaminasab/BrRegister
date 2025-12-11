@@ -366,6 +366,24 @@ async function parsePdfAndExtractAarsresultat(
               
               const aarsresultat = extractAarsresultatFromPdfText(ocrText, orgnr, year);
               const salgsinntekt = extractSalgsinntektFromPdfText(ocrText, orgnr, year);
+              
+              // Log hva OCR faktisk ekstraherte for debugging
+              console.log(`[${orgnr}] OCR-resultat for ${year}:`);
+              console.log(`[${orgnr}]   - Årsresultat: ${aarsresultat !== null ? aarsresultat : 'ikke funnet'}`);
+              console.log(`[${orgnr}]   - Salgsinntekt: ${salgsinntekt !== null ? salgsinntekt : 'ikke funnet'}`);
+              console.log(`[${orgnr}]   - OCR-tekst inneholder "resultat": ${ocrText.toLowerCase().includes('resultat')}`);
+              console.log(`[${orgnr}]   - OCR-tekst inneholder "årsresultat": ${ocrText.toLowerCase().includes('årsresultat')}`);
+              console.log(`[${orgnr}]   - OCR-tekst inneholder "salgsinntekt": ${ocrText.toLowerCase().includes('salgsinntekt')}`);
+              console.log(`[${orgnr}]   - OCR-tekst inneholder "omsetning": ${ocrText.toLowerCase().includes('omsetning')}`);
+              console.log(`[${orgnr}]   - OCR-tekst inneholder "driftsinntekt": ${ocrText.toLowerCase().includes('driftsinntekt')}`);
+              
+              // Prøv å finne alle tall i OCR-teksten for debugging
+              const allNumbers = ocrText.match(/([-]?\d{1,3}(?:\s?\d{3})*(?:\s?\d{3})*)/g);
+              if (allNumbers && allNumbers.length > 0) {
+                const uniqueNumbers = [...new Set(allNumbers.slice(0, 10))];
+                console.log(`[${orgnr}]   - Fant ${allNumbers.length} tall i OCR-teksten. Første 10 unike: ${uniqueNumbers.join(', ')}`);
+              }
+              
               if (aarsresultat !== null || salgsinntekt !== null) {
                 // Oppdater database med det ekstraherte årsresultatet og salgsinntekt
                 await updateAnnualReportInDatabase(orgnr, year, aarsresultat, salgsinntekt);
@@ -380,11 +398,12 @@ async function parsePdfAndExtractAarsresultat(
                   message: `Fant ${aarsresultat !== null ? `årsresultat ${aarsresultat}` : ''}${aarsresultat !== null && salgsinntekt !== null ? ' og ' : ''}${salgsinntekt !== null ? `salgsinntekt ${salgsinntekt}` : ''} via OCR`,
                 };
               } else {
-                console.log(`[${orgnr}] OCR ekstraherte tekst, men kunne ikke finne årsresultat eller salgsinntekt i teksten`);
-                console.log(`[${orgnr}] OCR-tekst inneholder "resultat": ${ocrText.toLowerCase().includes('resultat')}`);
-                console.log(`[${orgnr}] OCR-tekst inneholder "årsresultat": ${ocrText.toLowerCase().includes('årsresultat')}`);
-                console.log(`[${orgnr}] OCR-tekst inneholder "salgsinntekt": ${ocrText.toLowerCase().includes('salgsinntekt')}`);
-                console.log(`[${orgnr}] OCR-tekst inneholder "omsetning": ${ocrText.toLowerCase().includes('omsetning')}`);
+                console.log(`[${orgnr}] ⚠️ OCR ekstraherte tekst, men kunne ikke finne årsresultat eller salgsinntekt i teksten`);
+                // Prøv å finne store tall som kan være salgsinntekt eller årsresultat
+                const largeNumbers = ocrText.match(/([-]?\d{1,3}(?:\s?\d{3}){2,}(?:\s?\d{3})*)/g);
+                if (largeNumbers && largeNumbers.length > 0) {
+                  console.log(`[${orgnr}]   - Fant store tall i OCR-teksten (mulig årsresultat/salgsinntekt): ${largeNumbers.slice(0, 5).join(', ')}`);
+                }
               }
             } else {
               console.log(`[${orgnr}] OCR ekstraherte lite tekst (${ocrText?.length || 0} tegn)`);

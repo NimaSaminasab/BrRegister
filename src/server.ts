@@ -13,6 +13,12 @@ const DEFAULT_PORT = Number(process.env.PORT ?? '3000');
 export async function createApp() {
   const app = express();
 
+  // Log all requests for debugging
+  app.use((req, res, next) => {
+    console.log(`[${new Date().toISOString()}] ${req.method} ${req.path}`);
+    next();
+  });
+
   // Parse JSON bodies
   app.use(express.json());
 
@@ -118,6 +124,16 @@ export async function createApp() {
         details: isTimeout || isConnectionError ? 'Database connection failed' : undefined
       });
     }
+  });
+
+  // Catch-all for unmatched routes (after static files)
+  app.use((req: Request, res: Response) => {
+    console.warn(`⚠️ 404: ${req.method} ${req.path} - Route not found`);
+    res.status(404).json({ 
+      error: 'Not Found',
+      path: req.path,
+      method: req.method
+    });
   });
 
   return app;

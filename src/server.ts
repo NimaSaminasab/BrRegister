@@ -27,8 +27,10 @@ export async function createApp() {
   // __dirname in compiled code is dist/src, so we need to go up two levels
   const publicPath = path.join(__dirname, '../../public');
   
-  // Legg til API-ruter først
-  app.post('/api/scrape-pdf', async (req: Request, res: Response) => {
+  // API routes - må være før static files
+  const apiRouter = express.Router();
+  
+  apiRouter.post('/scrape-pdf', async (req: Request, res: Response) => {
     console.log('📥 POST /api/scrape-pdf mottatt');
     console.log('Request body:', JSON.stringify(req.body));
     
@@ -84,6 +86,9 @@ export async function createApp() {
       });
     }
   });
+
+  // Mount API router
+  app.use('/api', apiRouter);
 
   // Deretter static file serving
   app.use(express.static(publicPath));

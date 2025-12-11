@@ -15,8 +15,12 @@ export async function createApp() {
 
   // Log all requests for debugging - MUST be first middleware
   app.use((req, res, next) => {
-    console.log(`[${new Date().toISOString()}] ${req.method} ${req.path} - Request received`);
-    console.log(`  Headers:`, JSON.stringify(req.headers));
+    const timestamp = new Date().toISOString();
+    // Force output to be unbuffered
+    process.stdout.write(`[${timestamp}] ${req.method} ${req.path} - Request received\n`);
+    process.stdout.write(`[${timestamp}] Headers: ${JSON.stringify(req.headers)}\n`);
+    console.log(`[${timestamp}] ${req.method} ${req.path} - Request received`);
+    console.log(`[${timestamp}] Headers:`, JSON.stringify(req.headers));
     next();
   });
 

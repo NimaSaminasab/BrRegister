@@ -125,12 +125,14 @@ export async function createApp() {
 
 export async function startServer(port = DEFAULT_PORT) {
   const app = await createApp();
+  const host = process.env.HOST || '0.0.0.0'; // Lytter på alle interfaces for ekstern tilgang
 
   return new Promise<void>((resolve, reject) => {
-    const server = app.listen(port, () => {
-      console.log(`🚀 Server kjører på http://localhost:${port}`);
+    const server = app.listen(port, host, () => {
+      console.log(`🚀 Server kjører på http://${host}:${port}`);
       console.log(`   -> Besøk http://localhost:${port}/ for å se selskaper`);
       console.log(`   -> Besøk http://localhost:${port}/annual-reports.html for å se årsregnskap`);
+      console.log(`   -> Ekstern tilgang: http://<EC2-IP>:${port}/annual-reports.html`);
       resolve();
     });
 

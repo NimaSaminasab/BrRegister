@@ -78,7 +78,9 @@ export async function createApp() {
           message: result.message,
         });
       } else {
-        res.status(404).json({
+        // Return 200 even if not found, but with success: false
+        // This allows frontend to handle the response properly
+        res.status(200).json({
           success: false,
           aarsresultat: null,
           message: result.message,

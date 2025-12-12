@@ -396,13 +396,44 @@ async function parsePdfAndExtractAarsresultat(
               console.log(`[${orgnr}]   - OCR-tekst inneholder "salgsinntekt": ${ocrText.toLowerCase().includes('salgsinntekt')}`);
               console.log(`[${orgnr}]   - OCR-tekst inneholder "omsetning": ${ocrText.toLowerCase().includes('omsetning')}`);
               console.log(`[${orgnr}]   - OCR-tekst inneholder "driftsinntekt": ${ocrText.toLowerCase().includes('driftsinntekt')}`);
-              console.log(`[${orgnr}]   - OCR-tekst inneholder "sum inntekter": ${ocrText.toLowerCase().includes('sum') && ocrText.toLowerCase().includes('inntekter')}`);
+              const lowerOcrText = ocrText.toLowerCase();
+              const hasSum = lowerOcrText.includes('sum');
+              const hasInntekter = lowerOcrText.includes('inntekter') || lowerOcrText.includes('inntekt');
+              console.log(`[${orgnr}]   - OCR-tekst inneholder "sum": ${hasSum}`);
+              console.log(`[${orgnr}]   - OCR-tekst inneholder "inntekter/inntekt": ${hasInntekter}`);
+              console.log(`[${orgnr}]   - OCR-tekst inneholder "sum inntekter": ${hasSum && hasInntekter}`);
               
               // Prøv å finne alle tall i OCR-teksten for debugging
               const allNumbers = ocrText.match(/([-]?\d{1,3}(?:\s?\d{3})*(?:\s?\d{3})*)/g);
               if (allNumbers && allNumbers.length > 0) {
                 const uniqueNumbers = [...new Set(allNumbers.slice(0, 10))];
                 console.log(`[${orgnr}]   - Fant ${allNumbers.length} tall i OCR-teksten. Første 10 unike: ${uniqueNumbers.join(', ')}`);
+                
+                // Prøv å finne store tall som kan være "Sum inntekter" (vanligvis millioner)
+                const largeNumbers = allNumbers.filter(num => {
+                  const cleaned = num.replace(/\s+/g, '').replace(/\./g, '').replace(/,/g, '');
+                  const parsed = parseInt(cleaned, 10);
+                  return !isNaN(parsed) && parsed > 100000;
+                });
+                if (largeNumbers.length > 0) {
+                  console.log(`[${orgnr}]   - Store tall (mulig "Sum inntekter"): ${largeNumbers.slice(0, 5).join(', ')}`);
+                }
+              }
+              
+              // Log en sample av OCR-teksten som inneholder "sum" eller "inntekter"
+              if (hasSum || hasInntekter) {
+                const lines = ocrText.split('\n');
+                const relevantLines = lines.filter(line => 
+                  line.toLowerCase().includes('sum') || 
+                  line.toLowerCase().includes('inntekter') || 
+                  line.toLowerCase().includes('inntekt')
+                );
+                if (relevantLines.length > 0) {
+                  console.log(`[${orgnr}]   - Relevante linjer med "sum/inntekter" (første 5):`);
+                  relevantLines.slice(0, 5).forEach((line, idx) => {
+                    console.log(`[${orgnr}]     ${idx + 1}. "${line.substring(0, 150)}"`);
+                  });
+                }
               }
               
               if (aarsresultat !== null || salgsinntekt !== null || sumInntekter !== null) {
@@ -827,6 +858,13 @@ function extractSumInntekterFromPdfText(pdfText: string, orgnr: string, year: nu
     /sum\s+inntekter\s*\n\s*([-]?\d{1,3}(?:\s?\d{3})*(?:\s?\d{3})*)/i,
     // "Sum inntekter" med komma som tusen-separator
     /sum\s+inntekter[:\s]+([-]?\d{1,3}(?:,\d{3})*(?:,\d{3})*)/i,
+    // "Sum inntekter" uten mellomrom mellom ord (OCR kan gjøre feil)
+    /suminntekter[:\s]+([-]?\d{1,3}(?:\s?\d{3})*(?:\s?\d{3})*)/i,
+    // "Sum inntekter" med store/små bokstaver variasjoner
+    /[Ss]um\s+[Ii]nntekter[:\s]+([-]?\d{1,3}(?:\s?\d{3})*(?:\s?\d{3})*)/,
+    // Søk etter linjer som inneholder både "sum" og "inntekter" (kan være på forskjellige steder)
+    /sum.*inntekter.*?([-]?\d{1,3}(?:\s?\d{3})*(?:\s?\d{3})*)/i,
+    /inntekter.*sum.*?([-]?\d{1,3}(?:\s?\d{3})*(?:\s?\d{3})*)/i,
   ];
   
   for (const pattern of sumInntekterPatterns) {
@@ -846,24 +884,61 @@ function extractSumInntekterFromPdfText(pdfText: string, orgnr: string, year: nu
   const lines = pdfText.split('\n');
   console.log(`[${orgnr}] Søker i ${lines.length} linjer for "Sum inntekter"...`);
   
-  // Søk etter linjer som inneholder "Sum inntekter"
+  // Søk etter linjer som inneholder "Sum inntekter" eller lignende
   for (let i = 0; i < lines.length; i++) {
     const line = lines[i].toLowerCase();
+    const originalLine = lines[i];
     
-    // Sjekk om linjen inneholder "sum inntekter"
-    if (line.includes('sum') && line.includes('inntekter')) {
-      console.log(`[${orgnr}] Fant "Sum inntekter"-linje ${i + 1} for ${year}: "${line.substring(0, 100)}"`);
+    // Sjekk om linjen inneholder "sum" og "inntekter" (kan være på forskjellige steder)
+    const hasSum = line.includes('sum');
+    const hasInntekter = line.includes('inntekter') || line.includes('inntekt');
+    
+    if (hasSum && hasInntekter) {
+      console.log(`[${orgnr}] Fant "Sum inntekter"-linje ${i + 1} for ${year}: "${originalLine.substring(0, 150)}"`);
       
-      // Se på samme linje og neste linjer for å finne et tall
-      for (let j = Math.max(0, i - 1); j < Math.min(i + 5, lines.length); j++) {
+      // Se på samme linje først
+      const sameLineMatch = originalLine.match(/([-]?\d{1,3}(?:\s?\d{3}){2,}(?:\s?\d{3})*)/);
+      if (sameLineMatch) {
+        let cleanedValue = sameLineMatch[1].replace(/\s+/g, '').replace(/\./g, '').replace(/,/g, '');
+        const parsedValue = parseInt(cleanedValue, 10);
+        if (!isNaN(parsedValue) && parsedValue > 1000) {
+          console.log(`[${orgnr}] ✅ Fant "Sum inntekter" ${parsedValue} på samme linje (linje ${i + 1}) for ${year}`);
+          return parsedValue;
+        }
+      }
+      
+      // Se på neste linjer for å finne et tall
+      for (let j = i + 1; j < Math.min(i + 5, lines.length); j++) {
         // Prøv å finne tall med tusen-separatorer (mellomrom, punktum, komma)
-        const numberMatch = lines[j].match(/([-]?\d{1,3}(?:\s?\d{3})*(?:\s?\d{3})*)/);
+        const numberMatch = lines[j].match(/([-]?\d{1,3}(?:\s?\d{3}){2,}(?:\s?\d{3})*)/);
         if (numberMatch) {
           let cleanedValue = numberMatch[1].replace(/\s+/g, '').replace(/\./g, '').replace(/,/g, '');
           const parsedValue = parseInt(cleanedValue, 10);
           // "Sum inntekter" er vanligvis et stort tall (minst 1000)
           if (!isNaN(parsedValue) && parsedValue > 1000) {
-            console.log(`[${orgnr}] ✅ Fant "Sum inntekter" ${parsedValue} i PDF-teksten (linje ${j + 1}) for ${year}`);
+            console.log(`[${orgnr}] ✅ Fant "Sum inntekter" ${parsedValue} i PDF-teksten (linje ${j + 1}, etter "Sum inntekter"-linje) for ${year}`);
+            return parsedValue;
+          }
+        }
+      }
+    }
+  }
+  
+  // Siste forsøk: Søk etter store tall nær "sum" og "inntekter" (kan være på forskjellige linjer)
+  console.log(`[${orgnr}] Prøver siste forsøk: søker etter store tall nær "sum" og "inntekter"...`);
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i].toLowerCase();
+    if (line.includes('sum') || line.includes('inntekter') || line.includes('inntekt')) {
+      // Se på linjer i nærheten
+      for (let j = Math.max(0, i - 2); j < Math.min(i + 3, lines.length); j++) {
+        // Prøv å finne store tall (minst 6 siffer = minst 100 000)
+        const largeNumberMatch = lines[j].match(/([-]?\d{1,3}(?:\s?\d{3}){2,}(?:\s?\d{3})*)/);
+        if (largeNumberMatch) {
+          let cleanedValue = largeNumberMatch[1].replace(/\s+/g, '').replace(/\./g, '').replace(/,/g, '');
+          const parsedValue = parseInt(cleanedValue, 10);
+          // "Sum inntekter" er vanligvis et stort tall (minst 100 000 for små bedrifter, ofte millioner)
+          if (!isNaN(parsedValue) && parsedValue > 100000) {
+            console.log(`[${orgnr}] ✅ Fant mulig "Sum inntekter" ${parsedValue} i PDF-teksten (linje ${j + 1}, nær "sum/inntekter") for ${year}`);
             return parsedValue;
           }
         }

@@ -102,8 +102,8 @@ export async function scrapePdfForYear(
     // Hvis API ikke fungerte, prøv PDF-download via Next.js Server Action
     // Prøv flere mulige action ID-er og URL-er
     const possibleActionIds = [
-      "7fe7b594d072ac1557da402414c7b7b1f94a43fe62",
-      // Legg til flere action ID-er hvis nødvendig
+      "7fd2afcd7577fa6d843cd16b036f44fc50eef49091", // Ny action ID (desember 2025)
+      "7fe7b594d072ac1557da402414c7b7b1f94a43fe62", // Gammel action ID (fallback)
     ];
     
     const baseUrl = `https://virksomhet.brreg.no/nb/oppslag/enheter/${orgnr}`;

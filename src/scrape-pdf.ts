@@ -1,10 +1,13 @@
 import * as fs from 'fs';
 import * as path from 'path';
+import { exec } from 'child_process';
+import { promisify } from 'util';
 import pdf from 'pdf-parse';
 import axios from 'axios';
 import { createWorker } from 'tesseract.js';
-import { fromPath } from 'pdf2pic';
 import { createPostgresClient, getPostgresEnvConfig } from './postgres';
+
+const execAsync = promisify(exec);
 
 // Temp-mappe for PDF-filer
 const PDF_TEMP_DIR = path.join(__dirname, '../temp_pdfs');
@@ -987,36 +990,27 @@ async function performOCR(pdfPath: string, orgnr: string, year: number): Promise
       return null;
     }
     
-    // Konverter første siden av PDF til bilde
-    // Bruk ImageMagick i stedet for GraphicsMagick (som krever Ghostscript)
-    const options = {
-      density: 300,           // Høy oppløsning for bedre OCR
-      saveFilename: `${orgnr}_${year}`,
-      savePath: PDF_TEMP_DIR,
-      format: 'png',
-      width: 2000,
-      height: 2000,
-      imagemagick: true,      // Bruk ImageMagick i stedet for GraphicsMagick
-    };
+    // Konverter første siden av PDF til bilde ved å bruke ImageMagick direkte
+    const imagePath = path.join(PDF_TEMP_DIR, `${orgnr}_${year}.1.png`);
     
-    debugLog(`[${orgnr}] Oppretter PDF-konverterer med options: ${JSON.stringify(options)}`);
+    debugLog(`[${orgnr}] Konverterer PDF side 1 til bilde ved å bruke ImageMagick convert...`);
+    debugLog(`[${orgnr}] Output bilde: ${imagePath}`);
     
-    let convert;
     try {
-      convert = fromPath(pdfPath, options);
-      debugLog(`[${orgnr}] PDF-konverterer opprettet`);
-    } catch (convertError) {
-      debugLog(`[${orgnr}] ❌ Feil ved opprettelse av PDF-konverterer: ${(convertError as Error).message}`);
-      debugLog(`[${orgnr}] Dette kan tyde på at ImageMagick ikke er installert. Installer med: sudo dnf install -y ImageMagick`);
-      return null;
-    }
-    
-    let imageResult;
-    try {
-      debugLog(`[${orgnr}] Konverterer PDF side 1 til bilde...`);
-      // Prøv første side først, hvis den ikke gir resultat kan vi prøve flere sider
-      imageResult = await convert(1, { responseType: 'image' }); // Konverter første side
-      debugLog(`[${orgnr}] PDF konvertert til bilde. Type: ${typeof imageResult}`);
+      // Bruk ImageMagick convert direkte: convert -density 300 PDF[0] -resize 2000x2000 output.png
+      const convertCommand = `convert -density 300 "${pdfPath}[0]" -resize 2000x2000 "${imagePath}"`;
+      debugLog(`[${orgnr}] Kjører kommando: ${convertCommand}`);
+      
+      const { stdout, stderr } = await execAsync(convertCommand);
+      
+      if (stdout) {
+        debugLog(`[${orgnr}] Convert stdout: ${stdout}`);
+      }
+      if (stderr) {
+        debugLog(`[${orgnr}] Convert stderr: ${stderr}`);
+      }
+      
+      debugLog(`[${orgnr}] PDF konvertert til bilde: ${imagePath}`);
     } catch (convertError) {
       debugLog(`[${orgnr}] ❌ Feil ved konvertering av PDF til bilde: ${(convertError as Error).message}`);
       debugLog(`[${orgnr}] Error stack: ${(convertError as Error).stack}`);
@@ -1024,31 +1018,10 @@ async function performOCR(pdfPath: string, orgnr: string, year: number): Promise
       return null;
     }
     
-    // pdf2pic returnerer et objekt med path eller buffer
-    let imagePath: string;
-    debugLog(`[${orgnr}] Behandler imageResult. Type: ${typeof imageResult}, isObject: ${typeof imageResult === 'object'}, hasPath: ${imageResult && typeof imageResult === 'object' && 'path' in imageResult}`);
-    
-    if (typeof imageResult === 'string') {
-      imagePath = imageResult;
-      debugLog(`[${orgnr}] imageResult er string: ${imagePath}`);
-    } else if (imageResult && typeof imageResult === 'object' && 'path' in imageResult) {
-      imagePath = (imageResult as { path: string }).path;
-      debugLog(`[${orgnr}] imageResult har path property: ${imagePath}`);
-    } else {
-      debugLog(`[${orgnr}] ⚠️ Kunne ikke konvertere PDF til bilde for ${year}. imageResult type: ${typeof imageResult}`);
-      debugLog(`[${orgnr}] imageResult: ${JSON.stringify(imageResult).substring(0, 200)}`);
-      return null;
-    }
-    
-    if (!imagePath) {
-      debugLog(`[${orgnr}] ⚠️ imagePath er null eller undefined`);
-      return null;
-    }
-    
     debugLog(`[${orgnr}] Sjekker om bilde-fil eksisterer: ${imagePath}`);
     if (!fs.existsSync(imagePath)) {
       debugLog(`[${orgnr}] ⚠️ Bilde-fil eksisterer ikke: ${imagePath}`);
-      // Prøv å finne filen i temp-mappen
+      // Prøv å finne filer i temp-mappen
       const filesInTemp = fs.readdirSync(PDF_TEMP_DIR);
       debugLog(`[${orgnr}] Filer i temp-mappen: ${filesInTemp.join(', ')}`);
       return null;

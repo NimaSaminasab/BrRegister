@@ -100,167 +100,98 @@ export async function scrapePdfForYear(
     }
     
     // Hvis API ikke fungerte, prøv PDF-download via Next.js Server Action
-    const nextActionId = "7fe7b594d072ac1557da402414c7b7b1f94a43fe62";
+    // Prøv flere mulige action ID-er og URL-er
+    const possibleActionIds = [
+      "7fe7b594d072ac1557da402414c7b7b1f94a43fe62",
+      // Legg til flere action ID-er hvis nødvendig
+    ];
+    
     const baseUrl = `https://virksomhet.brreg.no/nb/oppslag/enheter/${orgnr}`;
+    const alternativeUrl = `https://virksomhet.brreg.no/api/regnskap/${orgnr}/${year}/pdf`;
     
     console.log(`[${orgnr}] Scraper PDF for ${year}...`);
     
-    const serverActionHeaders = {
-      'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-      'Accept': 'application/json, text/x-component, */*',
-      'Accept-Encoding': 'gzip, deflate, br',
-      'Accept-Language': 'nb-NO,nb;q=0.9,no;q=0.8,en;q=0.7',
-      'Referer': baseUrl,
-      'Next-Action': nextActionId,
-      'Content-Type': 'text/plain;charset=UTF-8',
-      'Origin': 'https://virksomhet.brreg.no',
-    };
-    
-    const body = JSON.stringify([orgnr, year.toString()]);
-    
-    const serverActionResponse = await axios.post(baseUrl, body, {
-      headers: serverActionHeaders,
-      timeout: 120000,
-      validateStatus: (status: number) => status === 200 || status === 404 || status === 400 || status === 500,
-      responseType: 'arraybuffer',
-    });
-    
-    console.log(`[${orgnr}] Server Action respons status: ${serverActionResponse.status}`);
-    console.log(`[${orgnr}] Response data størrelse: ${serverActionResponse.data ? (serverActionResponse.data as ArrayBuffer).byteLength : 0} bytes`);
-    
-    if (serverActionResponse.status !== 200) {
-      const errorText = Buffer.from(serverActionResponse.data).toString('utf-8').substring(0, 200);
-      console.error(`[${orgnr}] Server returnerte feil status ${serverActionResponse.status}: ${errorText}`);
-      return {
-        aarsresultat: null,
-        salgsinntekt: null,
-        sumInntekter: null,
-        success: false,
-        message: `Server returnerte status ${serverActionResponse.status}: ${errorText}`,
-      };
-    }
-    
-    const responseData = Buffer.from(serverActionResponse.data);
-    
-    // Log første del av responsen for debugging
-    const responsePreview = responseData.toString('utf-8', 0, Math.min(200, responseData.length));
-    console.log(`[${orgnr}] Response preview (første 200 tegn): ${responsePreview}`);
-    
-    // Sjekk om det er en PDF
-    if (!responseData.toString('utf-8', 0, 4).includes('%PDF') && responseData.length < 1000) {
-      // Det ser ikke ut som en PDF, kan være en feilmelding
-      const fullResponse = responseData.toString('utf-8');
-      console.error(`[${orgnr}] Respons ser ikke ut som en PDF. Full respons: ${fullResponse.substring(0, 500)}`);
-      return {
-        aarsresultat: null,
-        salgsinntekt: null,
-        sumInntekter: null,
-        success: false,
-        message: `Server returnerte ikke en PDF. Respons: ${fullResponse.substring(0, 200)}`,
-      };
-    }
-    
-    // Prøv å parse som JSON først
+    // Prøv først alternativ URL (hvis den eksisterer)
     try {
-      const responseText = responseData.toString('utf-8');
-      const jsonData = JSON.parse(responseText);
-      if (jsonData && typeof jsonData === 'object') {
-        // Hvis det er JSON-data, hent årsresultat fra den
-        const aarsresultat = extractAarsresultatFromJson(jsonData);
-        if (aarsresultat !== null) {
-          return {
-            aarsresultat,
-            salgsinntekt: null,
-            sumInntekter: null,
-            success: true,
-            message: `Fant årsresultat ${aarsresultat} i JSON-data`,
-          };
-        }
+      const altResponse = await axios.get(alternativeUrl, {
+        headers: {
+          'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+          'Accept': 'application/pdf, */*',
+        },
+        timeout: 120000,
+        validateStatus: (status: number) => status === 200 || status === 404,
+        responseType: 'arraybuffer',
+      });
+      
+      if (altResponse.status === 200 && altResponse.data && (altResponse.data as ArrayBuffer).byteLength > 1000) {
+        console.log(`[${orgnr}] ✅ Fant PDF via alternativ URL (${alternativeUrl})`);
+        const pdfBuffer = Buffer.from(altResponse.data);
+        const pdfResult = await parsePdfAndExtractAarsresultat(orgnr, year, pdfBuffer);
+        return {
+          ...pdfResult,
+          success: pdfResult.aarsresultat !== null || pdfResult.salgsinntekt !== null || pdfResult.sumInntekter !== null,
+        };
       }
-    } catch (jsonError) {
-      // Ikke JSON, sannsynligvis PDF-data - fortsett til PDF-parsing
+    } catch (altError) {
+      console.log(`[${orgnr}] Alternativ URL feilet: ${(altError as Error).message}`);
     }
     
-    // Parse PDF
-    const pdfResult = await parsePdfAndExtractAarsresultat(orgnr, year, responseData);
-    
-    if (pdfResult.aarsresultat !== null) {
-      // Oppdater database med det ekstraherte årsresultatet
-      await updateAnnualReportInDatabase(orgnr, year, pdfResult.aarsresultat, pdfResult.salgsinntekt, pdfResult.sumInntekter);
-      
-      const foundItems = [];
-      if (pdfResult.aarsresultat !== null) foundItems.push(`årsresultat ${pdfResult.aarsresultat}`);
-      if (pdfResult.salgsinntekt !== null) foundItems.push(`salgsinntekt ${pdfResult.salgsinntekt}`);
-      if (pdfResult.sumInntekter !== null) foundItems.push(`sum inntekter ${pdfResult.sumInntekter}`);
-      return {
-        aarsresultat: pdfResult.aarsresultat,
-        salgsinntekt: pdfResult.salgsinntekt,
-        sumInntekter: pdfResult.sumInntekter,
-        success: true,
-        message: `Fant ${foundItems.join(', ')} i PDF`,
-      };
-    }
-    
-    // Hvis PDF-parsing feilet, prøv å se om vi kan finne journalnummer og hente via API
-    if (pdfResult.message.includes('for kort') || pdfResult.message.includes('tom')) {
-      console.log(`[${orgnr}] PDF-parsing feilet for ${year}, prøver å finne journalnummer og hente via API...`);
-      
-      // Prøv å hente alle regnskap for organisasjonsnummeret og finne det riktige året
+    // Prøv Next.js Server Action med forskjellige action ID-er
+    for (const nextActionId of possibleActionIds) {
       try {
-        const allRegnskapUrl = `https://data.brreg.no/regnskapsregisteret/regnskap/${orgnr}`;
-        const allRegnskapResponse = await axios.get(allRegnskapUrl, {
-          headers: { Accept: 'application/json' },
-          timeout: 10000,
-          validateStatus: (status: number) => status === 200 || status === 404,
-        });
+        const serverActionHeaders = {
+          'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+          'Accept': 'application/json, text/x-component, */*',
+          'Accept-Encoding': 'gzip, deflate, br',
+          'Accept-Language': 'nb-NO,nb;q=0.9,no;q=0.8,en;q=0.7',
+          'Referer': baseUrl,
+          'Next-Action': nextActionId,
+          'Content-Type': 'text/plain;charset=UTF-8',
+          'Origin': 'https://virksomhet.brreg.no',
+        };
         
-        if (allRegnskapResponse.status === 200 && allRegnskapResponse.data) {
-          const allRegnskap = Array.isArray(allRegnskapResponse.data) 
-            ? allRegnskapResponse.data 
-            : [allRegnskapResponse.data];
-          
-          // Finn regnskap for det spesifikke året
-          for (const regnskap of allRegnskap) {
-            if (!regnskap || typeof regnskap !== 'object') continue;
-            
-            const periode = regnskap.regnskapsperiode as Record<string, unknown> | undefined;
-            const tilDato = periode?.tilDato as string | undefined;
-            let regnskapYear: number | null = null;
-            
-            if (tilDato && typeof tilDato === 'string') {
-              const yearMatch = tilDato.match(/(\d{4})/);
-              if (yearMatch) {
-                regnskapYear = parseInt(yearMatch[1], 10);
-              }
-            }
-            
-            if (regnskapYear === year) {
-              const aarsresultat = extractAarsresultatFromJson(regnskap);
-              if (aarsresultat !== null) {
-                console.log(`[${orgnr}] ✅ Fant årsresultat ${aarsresultat} via alle regnskap API for ${year}`);
-                await updateAnnualReportInDatabase(orgnr, year, aarsresultat, null, null);
-                return {
-                  aarsresultat,
-                  salgsinntekt: null,
-                  sumInntekter: null,
-                  success: true,
-                  message: `Fant årsresultat ${aarsresultat} via alle regnskap API`,
-                };
-              }
-            }
-          }
+        const body = JSON.stringify([orgnr, year.toString()]);
+        
+        console.log(`[${orgnr}] Prøver Server Action med ID: ${nextActionId.substring(0, 10)}...`);
+        
+        const serverActionResponse = await axios.post(baseUrl, body, {
+          headers: serverActionHeaders,
+          timeout: 120000,
+          validateStatus: (status: number) => status === 200 || status === 404 || status === 400 || status === 500,
+          responseType: 'arraybuffer',
+        });
+    
+        console.log(`[${orgnr}] Server Action respons status: ${serverActionResponse.status}`);
+        console.log(`[${orgnr}] Response data størrelse: ${serverActionResponse.data ? (serverActionResponse.data as ArrayBuffer).byteLength : 0} bytes`);
+        
+        if (serverActionResponse.status === 200 && serverActionResponse.data && (serverActionResponse.data as ArrayBuffer).byteLength > 1000) {
+          const responseData = Buffer.from(serverActionResponse.data);
+          console.log(`[${orgnr}] ✅ Fant PDF via Server Action med ID: ${nextActionId.substring(0, 10)}...`);
+          const pdfResult = await parsePdfAndExtractAarsresultat(orgnr, year, responseData);
+          return {
+            ...pdfResult,
+            success: pdfResult.aarsresultat !== null || pdfResult.salgsinntekt !== null || pdfResult.sumInntekter !== null,
+          };
+        } else if (serverActionResponse.status !== 200) {
+          const errorText = Buffer.from(serverActionResponse.data).toString('utf-8').substring(0, 200);
+          console.log(`[${orgnr}] Server Action ${nextActionId.substring(0, 10)}... returnerte status ${serverActionResponse.status}: ${errorText.substring(0, 50)}`);
+          // Fortsett til neste action ID
+          continue;
         }
-      } catch (fallbackError) {
-        console.log(`[${orgnr}] Fallback API-henting feilet:`, (fallbackError as Error).message);
+      } catch (actionError) {
+        console.log(`[${orgnr}] Server Action ${nextActionId.substring(0, 10)}... feilet: ${(actionError as Error).message}`);
+        // Fortsett til neste action ID
+        continue;
       }
     }
     
+    // Hvis alle Server Actions feilet, returner feil
     return {
       aarsresultat: null,
       salgsinntekt: null,
       sumInntekter: null,
       success: false,
-      message: pdfResult.message || 'Kunne ikke ekstraktere årsresultat fra PDF',
+      message: `Kunne ikke hente PDF for ${year}. Alle Server Actions returnerte 404 eller feilet.`,
     };
   } catch (error) {
     console.error(`[${orgnr}] Feil ved scraping av PDF for ${year}:`, (error as Error).message);

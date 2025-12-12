@@ -107,34 +107,8 @@ export async function scrapePdfForYear(
     ];
     
     const baseUrl = `https://virksomhet.brreg.no/nb/oppslag/enheter/${orgnr}`;
-    const alternativeUrl = `https://virksomhet.brreg.no/api/regnskap/${orgnr}/${year}/pdf`;
     
     console.log(`[${orgnr}] Scraper PDF for ${year}...`);
-    
-    // Prøv først alternativ URL (hvis den eksisterer)
-    try {
-      const altResponse = await axios.get(alternativeUrl, {
-        headers: {
-          'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-          'Accept': 'application/pdf, */*',
-        },
-        timeout: 120000,
-        validateStatus: (status: number) => status === 200 || status === 404,
-        responseType: 'arraybuffer',
-      });
-      
-      if (altResponse.status === 200 && altResponse.data && (altResponse.data as ArrayBuffer).byteLength > 1000) {
-        console.log(`[${orgnr}] ✅ Fant PDF via alternativ URL (${alternativeUrl})`);
-        const pdfBuffer = Buffer.from(altResponse.data);
-        const pdfResult = await parsePdfAndExtractAarsresultat(orgnr, year, pdfBuffer);
-        return {
-          ...pdfResult,
-          success: pdfResult.aarsresultat !== null || pdfResult.salgsinntekt !== null || pdfResult.sumInntekter !== null,
-        };
-      }
-    } catch (altError) {
-      console.log(`[${orgnr}] Alternativ URL feilet: ${(altError as Error).message}`);
-    }
     
     // Prøv Next.js Server Action med forskjellige action ID-er
     for (const nextActionId of possibleActionIds) {

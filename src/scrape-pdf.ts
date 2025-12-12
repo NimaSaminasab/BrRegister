@@ -1001,7 +1001,9 @@ async function performOCR(pdfPath: string, orgnr: string, year: number): Promise
       const convertCommand = `convert -density 300 "${pdfPath}[0]" -resize 2000x2000 "${imagePath}"`;
       debugLog(`[${orgnr}] Kjører kommando: ${convertCommand}`);
       
-      const { stdout, stderr } = await execAsync(convertCommand);
+      const { stdout, stderr } = await execAsync(convertCommand, {
+        maxBuffer: 10 * 1024 * 1024, // 10MB buffer
+      });
       
       if (stdout) {
         debugLog(`[${orgnr}] Convert stdout: ${stdout}`);
@@ -1011,10 +1013,16 @@ async function performOCR(pdfPath: string, orgnr: string, year: number): Promise
       }
       
       debugLog(`[${orgnr}] PDF konvertert til bilde: ${imagePath}`);
-    } catch (convertError) {
-      debugLog(`[${orgnr}] ❌ Feil ved konvertering av PDF til bilde: ${(convertError as Error).message}`);
-      debugLog(`[${orgnr}] Error stack: ${(convertError as Error).stack}`);
-      debugLog(`[${orgnr}] Dette kan tyde på at ImageMagick ikke er installert. Installer med: sudo dnf install -y ImageMagick`);
+    } catch (convertError: any) {
+      debugLog(`[${orgnr}] ❌ Feil ved konvertering av PDF til bilde: ${convertError.message}`);
+      if (convertError.stderr) {
+        debugLog(`[${orgnr}] Convert stderr: ${convertError.stderr}`);
+      }
+      if (convertError.stdout) {
+        debugLog(`[${orgnr}] Convert stdout: ${convertError.stdout}`);
+      }
+      debugLog(`[${orgnr}] Error stack: ${convertError.stack}`);
+      debugLog(`[${orgnr}] Dette kan tyde på at ImageMagick ikke er installert eller mangler PDF-delegate. Sjekk: convert -list delegate | grep pdf`);
       return null;
     }
     

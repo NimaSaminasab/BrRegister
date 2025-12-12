@@ -82,11 +82,12 @@ export async function createApp() {
       console.log(`\n[${new Date().toISOString()}] ✅ Scraping fullført. Resultat:`, JSON.stringify(result));
       console.log(`${'='.repeat(80)}\n`);
       
-      if (result.success && (result.aarsresultat !== null || result.salgsinntekt !== null)) {
+      if (result.success && (result.aarsresultat !== null || result.salgsinntekt !== null || result.sumInntekter !== null)) {
         res.json({
           success: true,
           aarsresultat: result.aarsresultat,
           salgsinntekt: result.salgsinntekt,
+          sumInntekter: result.sumInntekter,
           message: result.message,
         });
       } else {
@@ -96,6 +97,7 @@ export async function createApp() {
           success: false,
           aarsresultat: null,
           salgsinntekt: null,
+          sumInntekter: null,
           message: result.message,
         });
       }

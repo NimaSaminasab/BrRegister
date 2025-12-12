@@ -20,7 +20,7 @@ if (!fs.existsSync(PDF_TEMP_DIR)) {
 export async function scrapePdfForYear(
   orgnr: string,
   year: number
-): Promise<{ aarsresultat: number | null; salgsinntekt: number | null; success: boolean; message: string }> {
+): Promise<{ aarsresultat: number | null; salgsinntekt: number | null; sumInntekter: number | null; success: boolean; message: string }> {
   try {
     // Først: Prøv å hente via API (raskere og mer pålitelig)
     console.log(`[${orgnr}] Prøver først å hente via API for ${year}...`);
@@ -57,10 +57,11 @@ export async function scrapePdfForYear(
             if (aarsresultat !== null) {
               const yearInfo = actualYear ? ` (bekreftet år: ${actualYear})` : '';
               console.log(`[${orgnr}] ✅ Fant årsresultat ${aarsresultat} via API for ${year}${yearInfo}`);
-              await updateAnnualReportInDatabase(orgnr, year, aarsresultat, null);
+              await updateAnnualReportInDatabase(orgnr, year, aarsresultat, null, null);
               return {
                 aarsresultat,
                 salgsinntekt: null,
+                sumInntekter: null,
                 success: true,
                 message: `Fant årsresultat ${aarsresultat} via API`,
               };
@@ -110,6 +111,7 @@ export async function scrapePdfForYear(
       return {
         aarsresultat: null,
         salgsinntekt: null,
+        sumInntekter: null,
         success: false,
         message: `Server returnerte status ${serverActionResponse.status}: ${errorText}`,
       };
@@ -129,6 +131,7 @@ export async function scrapePdfForYear(
       return {
         aarsresultat: null,
         salgsinntekt: null,
+        sumInntekter: null,
         success: false,
         message: `Server returnerte ikke en PDF. Respons: ${fullResponse.substring(0, 200)}`,
       };
@@ -145,6 +148,7 @@ export async function scrapePdfForYear(
           return {
             aarsresultat,
             salgsinntekt: null,
+            sumInntekter: null,
             success: true,
             message: `Fant årsresultat ${aarsresultat} i JSON-data`,
           };
@@ -159,13 +163,18 @@ export async function scrapePdfForYear(
     
     if (pdfResult.aarsresultat !== null) {
       // Oppdater database med det ekstraherte årsresultatet
-      await updateAnnualReportInDatabase(orgnr, year, pdfResult.aarsresultat, pdfResult.salgsinntekt);
+      await updateAnnualReportInDatabase(orgnr, year, pdfResult.aarsresultat, pdfResult.salgsinntekt, pdfResult.sumInntekter);
       
+      const foundItems = [];
+      if (pdfResult.aarsresultat !== null) foundItems.push(`årsresultat ${pdfResult.aarsresultat}`);
+      if (pdfResult.salgsinntekt !== null) foundItems.push(`salgsinntekt ${pdfResult.salgsinntekt}`);
+      if (pdfResult.sumInntekter !== null) foundItems.push(`sum inntekter ${pdfResult.sumInntekter}`);
       return {
         aarsresultat: pdfResult.aarsresultat,
         salgsinntekt: pdfResult.salgsinntekt,
+        sumInntekter: pdfResult.sumInntekter,
         success: true,
-        message: `Fant ${pdfResult.aarsresultat !== null ? `årsresultat ${pdfResult.aarsresultat}` : ''}${pdfResult.aarsresultat !== null && pdfResult.salgsinntekt !== null ? ' og ' : ''}${pdfResult.salgsinntekt !== null ? `salgsinntekt ${pdfResult.salgsinntekt}` : ''} i PDF`,
+        message: `Fant ${foundItems.join(', ')} i PDF`,
       };
     }
     
@@ -206,10 +215,11 @@ export async function scrapePdfForYear(
               const aarsresultat = extractAarsresultatFromJson(regnskap);
               if (aarsresultat !== null) {
                 console.log(`[${orgnr}] ✅ Fant årsresultat ${aarsresultat} via alle regnskap API for ${year}`);
-                await updateAnnualReportInDatabase(orgnr, year, aarsresultat, null);
+                await updateAnnualReportInDatabase(orgnr, year, aarsresultat, null, null);
                 return {
                   aarsresultat,
                   salgsinntekt: null,
+                  sumInntekter: null,
                   success: true,
                   message: `Fant årsresultat ${aarsresultat} via alle regnskap API`,
                 };
@@ -225,6 +235,7 @@ export async function scrapePdfForYear(
     return {
       aarsresultat: null,
       salgsinntekt: null,
+      sumInntekter: null,
       success: false,
       message: pdfResult.message || 'Kunne ikke ekstraktere årsresultat fra PDF',
     };
@@ -233,6 +244,7 @@ export async function scrapePdfForYear(
     return {
       aarsresultat: null,
       salgsinntekt: null,
+      sumInntekter: null,
       success: false,
       message: (error as Error).message,
     };
@@ -246,7 +258,7 @@ async function parsePdfAndExtractAarsresultat(
   orgnr: string,
   year: number,
   pdfBuffer: Buffer
-): Promise<{ aarsresultat: number | null; salgsinntekt: number | null; message: string }> {
+): Promise<{ aarsresultat: number | null; salgsinntekt: number | null; sumInntekter: number | null; message: string }> {
   try {
     console.log(`[${orgnr}] Parser PDF-buffer (størrelse: ${pdfBuffer.length} bytes) for ${year}...`);
     
@@ -260,6 +272,7 @@ async function parsePdfAndExtractAarsresultat(
       return {
         aarsresultat: null,
         salgsinntekt: null,
+        sumInntekter: null,
         message: `Server Action returnerte feilmelding: ${fullError}`,
       };
     }
@@ -275,6 +288,7 @@ async function parsePdfAndExtractAarsresultat(
         return {
           aarsresultat: null,
           salgsinntekt: null,
+          sumInntekter: null,
           message: `Ingen PDF funnet i respons. Respons: ${responseText.substring(0, 200)}`,
         };
       } else {
@@ -282,6 +296,7 @@ async function parsePdfAndExtractAarsresultat(
         return {
           aarsresultat: null,
           salgsinntekt: null,
+          sumInntekter: null,
           message: `Ingen PDF funnet i respons (størrelse: ${pdfBuffer.length} bytes)`,
         };
       }
@@ -296,6 +311,7 @@ async function parsePdfAndExtractAarsresultat(
       return {
         aarsresultat: null,
         salgsinntekt: null,
+        sumInntekter: null,
         message: 'PDF er ufullstendig (ingen %%EOF marker)',
       };
     }
@@ -310,6 +326,7 @@ async function parsePdfAndExtractAarsresultat(
       return {
         aarsresultat: null,
         salgsinntekt: null,
+        sumInntekter: null,
         message: `Ugyldig PDF-data (størrelse: ${pdfData.length} bytes, minimum 1000 bytes forventet)`,
       };
     }
@@ -330,6 +347,7 @@ async function parsePdfAndExtractAarsresultat(
         return {
           aarsresultat: null,
           salgsinntekt: null,
+          sumInntekter: null,
           message: `Feil ved PDF-parsing: ${(parseError as Error).message}`,
         };
       }
@@ -366,16 +384,19 @@ async function parsePdfAndExtractAarsresultat(
               
               const aarsresultat = extractAarsresultatFromPdfText(ocrText, orgnr, year);
               const salgsinntekt = extractSalgsinntektFromPdfText(ocrText, orgnr, year);
+              const sumInntekter = extractSumInntekterFromPdfText(ocrText, orgnr, year);
               
               // Log hva OCR faktisk ekstraherte for debugging
               console.log(`[${orgnr}] OCR-resultat for ${year}:`);
               console.log(`[${orgnr}]   - Årsresultat: ${aarsresultat !== null ? aarsresultat : 'ikke funnet'}`);
               console.log(`[${orgnr}]   - Salgsinntekt: ${salgsinntekt !== null ? salgsinntekt : 'ikke funnet'}`);
+              console.log(`[${orgnr}]   - Sum inntekter: ${sumInntekter !== null ? sumInntekter : 'ikke funnet'}`);
               console.log(`[${orgnr}]   - OCR-tekst inneholder "resultat": ${ocrText.toLowerCase().includes('resultat')}`);
               console.log(`[${orgnr}]   - OCR-tekst inneholder "årsresultat": ${ocrText.toLowerCase().includes('årsresultat')}`);
               console.log(`[${orgnr}]   - OCR-tekst inneholder "salgsinntekt": ${ocrText.toLowerCase().includes('salgsinntekt')}`);
               console.log(`[${orgnr}]   - OCR-tekst inneholder "omsetning": ${ocrText.toLowerCase().includes('omsetning')}`);
               console.log(`[${orgnr}]   - OCR-tekst inneholder "driftsinntekt": ${ocrText.toLowerCase().includes('driftsinntekt')}`);
+              console.log(`[${orgnr}]   - OCR-tekst inneholder "sum inntekter": ${ocrText.toLowerCase().includes('sum') && ocrText.toLowerCase().includes('inntekter')}`);
               
               // Prøv å finne alle tall i OCR-teksten for debugging
               const allNumbers = ocrText.match(/([-]?\d{1,3}(?:\s?\d{3})*(?:\s?\d{3})*)/g);
@@ -384,21 +405,26 @@ async function parsePdfAndExtractAarsresultat(
                 console.log(`[${orgnr}]   - Fant ${allNumbers.length} tall i OCR-teksten. Første 10 unike: ${uniqueNumbers.join(', ')}`);
               }
               
-              if (aarsresultat !== null || salgsinntekt !== null) {
-                // Oppdater database med det ekstraherte årsresultatet og salgsinntekt
-                await updateAnnualReportInDatabase(orgnr, year, aarsresultat, salgsinntekt);
+              if (aarsresultat !== null || salgsinntekt !== null || sumInntekter !== null) {
+                // Oppdater database med det ekstraherte data
+                await updateAnnualReportInDatabase(orgnr, year, aarsresultat, salgsinntekt, sumInntekter);
                 
                 // Slett temp-fil
                 if (fs.existsSync(tempPdfPath)) {
                   fs.unlinkSync(tempPdfPath);
                 }
+                const foundItems = [];
+                if (aarsresultat !== null) foundItems.push(`årsresultat ${aarsresultat}`);
+                if (salgsinntekt !== null) foundItems.push(`salgsinntekt ${salgsinntekt}`);
+                if (sumInntekter !== null) foundItems.push(`sum inntekter ${sumInntekter}`);
                 return {
                   aarsresultat: aarsresultat,
                   salgsinntekt: salgsinntekt,
-                  message: `Fant ${aarsresultat !== null ? `årsresultat ${aarsresultat}` : ''}${aarsresultat !== null && salgsinntekt !== null ? ' og ' : ''}${salgsinntekt !== null ? `salgsinntekt ${salgsinntekt}` : ''} via OCR`,
+                  sumInntekter: sumInntekter,
+                  message: `Fant ${foundItems.join(', ')} via OCR`,
                 };
               } else {
-                console.log(`[${orgnr}] ⚠️ OCR ekstraherte tekst, men kunne ikke finne årsresultat eller salgsinntekt i teksten`);
+                console.log(`[${orgnr}] ⚠️ OCR ekstraherte tekst, men kunne ikke finne årsresultat, salgsinntekt eller sum inntekter i teksten`);
                 // Prøv å finne store tall som kan være salgsinntekt eller årsresultat
                 const largeNumbers = ocrText.match(/([-]?\d{1,3}(?:\s?\d{3}){2,}(?:\s?\d{3})*)/g);
                 if (largeNumbers && largeNumbers.length > 0) {
@@ -484,10 +510,11 @@ async function parsePdfAndExtractAarsresultat(
                     const aarsresultat = extractAarsresultatFromJson(data);
                     if (aarsresultat !== null) {
                       console.log(`[${orgnr}] ✅ Fant årsresultat ${aarsresultat} via API med journalnummer fra PDF-metadata for ${year}`);
-                      await updateAnnualReportInDatabase(orgnr, year, aarsresultat, null);
+                      await updateAnnualReportInDatabase(orgnr, year, aarsresultat, null, null);
                       return {
                         aarsresultat,
                         salgsinntekt: null,
+                        sumInntekter: null,
                         message: `Fant årsresultat ${aarsresultat} via API med journalnummer fra PDF-metadata`,
                       };
                     }
@@ -518,24 +545,31 @@ async function parsePdfAndExtractAarsresultat(
         return {
           aarsresultat: null,
           salgsinntekt: null,
+          sumInntekter: null,
           message,
         };
       }
       
-      // Ekstraher årsresultat fra PDF-teksten
+      // Ekstraher årsresultat, salgsinntekt og sum inntekter fra PDF-teksten
       const aarsresultat = extractAarsresultatFromPdfText(pdfText, orgnr, year);
       const salgsinntekt = extractSalgsinntektFromPdfText(pdfText, orgnr, year);
+      const sumInntekter = extractSumInntekterFromPdfText(pdfText, orgnr, year);
       
       // Slett temp-fil
       if (fs.existsSync(tempPdfPath)) {
         fs.unlinkSync(tempPdfPath);
       }
       
-      if (aarsresultat !== null || salgsinntekt !== null) {
+      if (aarsresultat !== null || salgsinntekt !== null || sumInntekter !== null) {
+        const foundItems = [];
+        if (aarsresultat !== null) foundItems.push(`årsresultat ${aarsresultat}`);
+        if (salgsinntekt !== null) foundItems.push(`salgsinntekt ${salgsinntekt}`);
+        if (sumInntekter !== null) foundItems.push(`sum inntekter ${sumInntekter}`);
         return {
           aarsresultat: aarsresultat,
           salgsinntekt: salgsinntekt,
-          message: `Fant ${aarsresultat !== null ? `årsresultat ${aarsresultat}` : ''}${aarsresultat !== null && salgsinntekt !== null ? ' og ' : ''}${salgsinntekt !== null ? `salgsinntekt ${salgsinntekt}` : ''} i PDF-teksten`,
+          sumInntekter: sumInntekter,
+          message: `Fant ${foundItems.join(', ')} i PDF-teksten`,
         };
       }
       
@@ -555,11 +589,12 @@ async function parsePdfAndExtractAarsresultat(
         debugInfo += `Fant tall i PDF: ${sampleNumbers}...`;
       }
       
-      return {
-        aarsresultat: null,
-        salgsinntekt: null,
-        message: `Kunne ikke finne årsresultat i PDF-teksten. ${debugInfo}`,
-      };
+        return {
+          aarsresultat: null,
+          salgsinntekt: null,
+          sumInntekter: null,
+          message: `Kunne ikke finne årsresultat i PDF-teksten. ${debugInfo}`,
+        };
     } catch (parseError) {
       // Slett temp-fil hvis parsing feiler
       if (fs.existsSync(tempPdfPath)) {
@@ -575,6 +610,7 @@ async function parsePdfAndExtractAarsresultat(
     return {
       aarsresultat: null,
       salgsinntekt: null,
+      sumInntekter: null,
       message: (error as Error).message,
     };
   }
@@ -774,6 +810,72 @@ function extractSalgsinntektFromPdfText(pdfText: string, orgnr: string, year: nu
 }
 
 /**
+ * Ekstrakterer "Sum inntekter" fra PDF-tekst
+ */
+function extractSumInntekterFromPdfText(pdfText: string, orgnr: string, year: number): number | null {
+  console.log(`[${orgnr}] Søker etter "Sum inntekter" i PDF-tekst for ${year} (${pdfText.length} tegn totalt)...`);
+  
+  // Prøv forskjellige patterns for å finne "Sum inntekter" i PDF-teksten
+  const sumInntekterPatterns = [
+    // "Sum inntekter: 8 524 493" eller "Sum inntekter 8 524 493" (med mellomrom i tall)
+    /sum\s+inntekter[:\s]+([-]?\d{1,3}(?:\s?\d{3})*(?:\s?\d{3})*)/i,
+    // "Sum inntekter: 8524493" (uten mellomrom)
+    /sum\s+inntekter[:\s]+([-]?\d{4,12})/i,
+    // "Sum inntekter" med punktum som tusen-separator: "8.524.493"
+    /sum\s+inntekter[:\s]+([-]?\d{1,3}(?:\.\d{3})*(?:\.\d{3})*)/i,
+    // "Sum inntekter" på en linje, tall på neste linje
+    /sum\s+inntekter\s*\n\s*([-]?\d{1,3}(?:\s?\d{3})*(?:\s?\d{3})*)/i,
+    // "Sum inntekter" med komma som tusen-separator
+    /sum\s+inntekter[:\s]+([-]?\d{1,3}(?:,\d{3})*(?:,\d{3})*)/i,
+  ];
+  
+  for (const pattern of sumInntekterPatterns) {
+    const match = pdfText.match(pattern);
+    if (match && match[1]) {
+      // Fjern mellomrom, punktum og komma (som tusen-separatorer) og konverter til tall
+      let cleanedValue = match[1].replace(/\s+/g, '').replace(/\./g, '').replace(/,/g, '');
+      const parsedValue = parseInt(cleanedValue, 10);
+      if (!isNaN(parsedValue)) {
+        console.log(`[${orgnr}] ✅ Fant "Sum inntekter" ${parsedValue} i PDF-teksten for ${year} (pattern match)`);
+        return parsedValue;
+      }
+    }
+  }
+  
+  // Hvis vi ikke fant "Sum inntekter" med patterns, prøv å finne det i tabell-format
+  const lines = pdfText.split('\n');
+  console.log(`[${orgnr}] Søker i ${lines.length} linjer for "Sum inntekter"...`);
+  
+  // Søk etter linjer som inneholder "Sum inntekter"
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i].toLowerCase();
+    
+    // Sjekk om linjen inneholder "sum inntekter"
+    if (line.includes('sum') && line.includes('inntekter')) {
+      console.log(`[${orgnr}] Fant "Sum inntekter"-linje ${i + 1} for ${year}: "${line.substring(0, 100)}"`);
+      
+      // Se på samme linje og neste linjer for å finne et tall
+      for (let j = Math.max(0, i - 1); j < Math.min(i + 5, lines.length); j++) {
+        // Prøv å finne tall med tusen-separatorer (mellomrom, punktum, komma)
+        const numberMatch = lines[j].match(/([-]?\d{1,3}(?:\s?\d{3})*(?:\s?\d{3})*)/);
+        if (numberMatch) {
+          let cleanedValue = numberMatch[1].replace(/\s+/g, '').replace(/\./g, '').replace(/,/g, '');
+          const parsedValue = parseInt(cleanedValue, 10);
+          // "Sum inntekter" er vanligvis et stort tall (minst 1000)
+          if (!isNaN(parsedValue) && parsedValue > 1000) {
+            console.log(`[${orgnr}] ✅ Fant "Sum inntekter" ${parsedValue} i PDF-teksten (linje ${j + 1}) for ${year}`);
+            return parsedValue;
+          }
+        }
+      }
+    }
+  }
+  
+  console.log(`[${orgnr}] ⚠️ Kunne ikke finne "Sum inntekter" i PDF-teksten for ${year}`);
+  return null;
+}
+
+/**
  * Utfører OCR på PDF for å ekstraktere tekst fra scanned dokumenter
  */
 async function performOCR(pdfPath: string, orgnr: string, year: number): Promise<string | null> {
@@ -921,7 +1023,8 @@ async function updateAnnualReportInDatabase(
   orgnr: string,
   year: number,
   aarsresultat: number | null,
-  salgsinntekt: number | null = null
+  salgsinntekt: number | null = null,
+  sumInntekter: number | null = null
 ): Promise<void> {
   const postgresConfig = getPostgresEnvConfig();
   const client = createPostgresClient(postgresConfig);
@@ -947,6 +1050,7 @@ async function updateAnnualReportInDatabase(
           resultatregnskapResultat: {
             ...(aarsresultat !== null ? { aarsresultat } : {}),
             ...(salgsinntekt !== null ? { salgsinntekt } : {}),
+            ...(sumInntekter !== null ? { sumInntekter } : {}),
           },
         },
       };
@@ -976,6 +1080,9 @@ async function updateAnnualReportInDatabase(
       if (salgsinntekt !== null) {
         resultatregnskapResultat.salgsinntekt = salgsinntekt;
       }
+      if (sumInntekter !== null) {
+        resultatregnskapResultat.sumInntekter = sumInntekter;
+      }
       
       await client.query(
         'UPDATE brreg_annual_reports SET data = $1 WHERE organisasjonsnummer = $2 AND ar = $3',
@@ -986,7 +1093,8 @@ async function updateAnnualReportInDatabase(
     const updates = [];
     if (aarsresultat !== null) updates.push(`årsresultat ${aarsresultat}`);
     if (salgsinntekt !== null) updates.push(`salgsinntekt ${salgsinntekt}`);
-    console.log(`[${orgnr}] Oppdaterte årsregnskap for ${year} med ${updates.join(' og ')} i databasen`);
+    if (sumInntekter !== null) updates.push(`sum inntekter ${sumInntekter}`);
+    console.log(`[${orgnr}] Oppdaterte årsregnskap for ${year} med ${updates.join(', ')} i databasen`);
   } catch (error) {
     console.error(`[${orgnr}] Feil ved oppdatering av database for ${year}:`, (error as Error).message);
     throw error;

@@ -187,6 +187,7 @@
           <th scope="col">År</th>
           <th scope="col">Årsresultat</th>
           <th scope="col">Salgsinntekt</th>
+          <th scope="col">Sum inntekter</th>
           <th scope="col">Datatype</th>
         </tr>
       </thead>
@@ -195,7 +196,7 @@
 
     <template id="empty-row">
       <tr>
-        <td colspan="6" style="text-align: center; padding: 2rem">Ingen årsregnskap funnet.</td>
+        <td colspan="7" style="text-align: center; padding: 2rem">Ingen årsregnskap funnet.</td>
       </tr>
     </template>
 
@@ -238,7 +239,7 @@
           const headerRow = document.createElement('tr');
           headerRow.className = 'group-header';
           const headerCell = document.createElement('td');
-          headerCell.colSpan = 6;
+          headerCell.colSpan = 7;
           headerCell.textContent = `${orgnr} - ${orgReports[0].company_name || 'Ukjent navn'} (${orgReports.length} årsregnskap)`;
           headerRow.appendChild(headerCell);
           tbodyElement.appendChild(headerRow);
@@ -302,6 +303,24 @@
               salgsinntektCell.textContent = '—';
             }
 
+            const sumInntekterCell = document.createElement('td');
+            // Prøv å hente sum inntekter fra forskjellige steder i datastrukturen
+            let sumInntekter = report.data?.raw?.resultatregnskapResultat?.sumInntekter;
+            // Hvis ikke funnet, prøv direkte i raw
+            if (sumInntekter === undefined || sumInntekter === null) {
+              sumInntekter = report.data?.raw?.sumInntekter;
+            }
+            // Hvis ikke funnet, prøv i summary
+            if (sumInntekter === undefined || sumInntekter === null) {
+              sumInntekter = report.data?.summary?.resultatregnskapResultat?.sumInntekter;
+            }
+            if (sumInntekter !== undefined && sumInntekter !== null) {
+              // Formater som norsk tall med tusen-separator
+              sumInntekterCell.textContent = new Intl.NumberFormat('nb-NO').format(sumInntekter);
+            } else {
+              sumInntekterCell.textContent = '—';
+            }
+
             const dataTypeCell = document.createElement('td');
             const dataType = getDataType(report.data);
             const badge = document.createElement('span');
@@ -309,7 +328,7 @@
             badge.textContent = dataType.label;
             dataTypeCell.appendChild(badge);
 
-            tr.append(orgnrCell, nameCell, yearCell, aarsresultatCell, salgsinntektCell, dataTypeCell);
+            tr.append(orgnrCell, nameCell, yearCell, aarsresultatCell, salgsinntektCell, sumInntekterCell, dataTypeCell);
             tbodyElement.appendChild(tr);
           }
         }

@@ -1044,6 +1044,7 @@ async function performOCR(pdfPath: string, orgnr: string, year: number): Promise
     let worker;
     try {
       debugLog(`[${orgnr}] Oppretter Tesseract worker med norsk språk...`);
+      // Bruk færre threads og reduser minnebruk
       worker = await createWorker('nor', 1, {
         logger: (m: { status: string; progress: number }) => {
           if (m.status === 'recognizing text') {
@@ -1052,6 +1053,8 @@ async function performOCR(pdfPath: string, orgnr: string, year: number): Promise
             debugLog(`[${orgnr}] OCR status: ${m.status}`);
           }
         },
+        // Reduser minnebruk ved å bruke færre threads
+        gzip: false,
       });
       debugLog(`[${orgnr}] Tesseract worker opprettet`);
     } catch (workerError) {

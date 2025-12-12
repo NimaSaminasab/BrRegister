@@ -726,27 +726,35 @@ function extractAarsresultatFromPdfText(pdfText: string, orgnr: string, year: nu
   const lines = pdfText.split('\n');
   console.log(`[${orgnr}] Søker i ${lines.length} linjer for årsresultat...`);
   
-  // Søk etter linjer som inneholder resultat-relaterte ord
-  const resultatKeywords = ['årsresultat', 'resultatregnskap', 'nettoresultat', 'resultat etter skatt', 'resultat for året'];
-  
+  // Søk etter linjer som inneholder "Årsresultat" (prioriter denne)
   for (let i = 0; i < lines.length; i++) {
     const line = lines[i].toLowerCase();
     
-    // Sjekk om linjen inneholder noen av nøkkelordene
-    const hasKeyword = resultatKeywords.some(keyword => line.includes(keyword));
-    
-    if (hasKeyword || (line.includes('resultat') && (line.includes('år') || line.includes('året')))) {
-      console.log(`[${orgnr}] Fant "resultat"-linje ${i + 1} for ${year}: "${line.substring(0, 100)}"`);
+    // Prioriter eksakt match på "årsresultat" (ikke bare "resultat")
+    if (line.includes('årsresultat')) {
+      console.log(`[${orgnr}] Fant "årsresultat"-linje ${i + 1} for ${year}: "${lines[i].substring(0, 150)}"`);
       
-      // Se på samme linje og neste linjer for å finne et tall
-      for (let j = Math.max(0, i - 1); j < Math.min(i + 5, lines.length); j++) {
-        // Prøv å finne tall med tusen-separatorer (mellomrom, punktum, komma)
-        const numberMatch = lines[j].match(/([-]?\d{1,3}(?:\s?\d{3})*(?:\s?\d{3})*)/);
-        if (numberMatch) {
-          let cleanedValue = numberMatch[1].replace(/\s+/g, '').replace(/\./g, '').replace(/,/g, '');
+      // Først: Prøv å finne tall på samme linje som "Årsresultat"
+      const sameLineMatch = lines[i].match(/årsresultat[^\d]*([-]?\d{1,3}(?:\s?\d{3})*(?:\s?\d{3})*)/i);
+      if (sameLineMatch && sameLineMatch[1]) {
+        let cleanedValue = sameLineMatch[1].replace(/\s+/g, '').replace(/\./g, '').replace(/,/g, '');
+        const parsedValue = parseInt(cleanedValue, 10);
+        if (!isNaN(parsedValue) && Math.abs(parsedValue) > 100) {
+          console.log(`[${orgnr}] ✅ Fant årsresultat ${parsedValue} på samme linje som "Årsresultat" for ${year}`);
+          return parsedValue;
+        }
+      }
+      
+      // Hvis ikke på samme linje, se på neste linje (ikke forrige, for å unngå å ta tall fra forrige seksjon)
+      if (i + 1 < lines.length) {
+        const nextLine = lines[i + 1];
+        // Prøv å finne første tall på neste linje
+        const nextLineMatch = nextLine.match(/([-]?\d{1,3}(?:\s?\d{3})*(?:\s?\d{3})*)/);
+        if (nextLineMatch && nextLineMatch[1]) {
+          let cleanedValue = nextLineMatch[1].replace(/\s+/g, '').replace(/\./g, '').replace(/,/g, '');
           const parsedValue = parseInt(cleanedValue, 10);
           if (!isNaN(parsedValue) && Math.abs(parsedValue) > 100) {
-            console.log(`[${orgnr}] ✅ Fant årsresultat ${parsedValue} i PDF-teksten (linje ${j + 1}) for ${year}`);
+            console.log(`[${orgnr}] ✅ Fant årsresultat ${parsedValue} på linje etter "Årsresultat" for ${year}`);
             return parsedValue;
           }
         }
@@ -754,24 +762,58 @@ function extractAarsresultatFromPdfText(pdfText: string, orgnr: string, year: nu
     }
   }
   
+  // Fallback: Søk etter andre resultat-relaterte ord (men være mer forsiktig)
+  const resultatKeywords = ['resultat etter skatt', 'nettoresultat', 'resultat for året'];
+  
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i].toLowerCase();
+    
+    // Sjekk om linjen inneholder noen av nøkkelordene
+    const hasKeyword = resultatKeywords.some(keyword => line.includes(keyword));
+    
+    if (hasKeyword) {
+      console.log(`[${orgnr}] Fant resultat-linje ${i + 1} for ${year}: "${lines[i].substring(0, 100)}"`);
+      
+      // Prøv å finne tall på samme linje først
+      const sameLineMatch = lines[i].match(/([-]?\d{1,3}(?:\s?\d{3})*(?:\s?\d{3})*)/);
+      if (sameLineMatch && sameLineMatch[1]) {
+        let cleanedValue = sameLineMatch[1].replace(/\s+/g, '').replace(/\./g, '').replace(/,/g, '');
+        const parsedValue = parseInt(cleanedValue, 10);
+        if (!isNaN(parsedValue) && Math.abs(parsedValue) > 100) {
+          console.log(`[${orgnr}] ✅ Fant årsresultat ${parsedValue} i PDF-teksten (linje ${i + 1}) for ${year}`);
+          return parsedValue;
+        }
+      }
+    }
+  }
+  
   // Siste forsøk: Søk etter store tall i nærheten av "resultat" eller "regnskap"
+  // Men være mer forsiktig - kun ta tall på samme linje eller neste linje
   console.log(`[${orgnr}] Prøver siste forsøk: søker etter store tall nær "resultat" eller "regnskap"...`);
   for (let i = 0; i < lines.length; i++) {
     const line = lines[i].toLowerCase();
-    if (line.includes('resultat') || line.includes('regnskap')) {
-      // Se på linjer i nærheten
-      for (let j = Math.max(0, i - 2); j < Math.min(i + 3, lines.length); j++) {
-        // Prøv å finne alle tall i linjen
-        const allNumbers = lines[j].match(/([-]?\d{1,3}(?:\s?\d{3})*(?:\s?\d{3})*)/g);
-        if (allNumbers) {
-          for (const numStr of allNumbers) {
-            let cleanedValue = numStr.replace(/\s+/g, '').replace(/\./g, '').replace(/,/g, '');
-            const parsedValue = parseInt(cleanedValue, 10);
-            // Årsresultat er vanligvis et stort tall (minst 1000, men kan være negativt)
-            if (!isNaN(parsedValue) && Math.abs(parsedValue) > 1000) {
-              console.log(`[${orgnr}] ✅ Fant mulig årsresultat ${parsedValue} i PDF-teksten (linje ${j + 1}, nær "resultat/regnskap") for ${year}`);
-              return parsedValue;
-            }
+    // Prioriter linjer som inneholder "resultat" (ikke bare "regnskap")
+    if (line.includes('resultat')) {
+      // Først prøv samme linje
+      const sameLineMatch = lines[i].match(/([-]?\d{1,3}(?:\s?\d{3})*(?:\s?\d{3})*)/);
+      if (sameLineMatch && sameLineMatch[1]) {
+        let cleanedValue = sameLineMatch[1].replace(/\s+/g, '').replace(/\./g, '').replace(/,/g, '');
+        const parsedValue = parseInt(cleanedValue, 10);
+        if (!isNaN(parsedValue) && Math.abs(parsedValue) > 100) {
+          console.log(`[${orgnr}] ✅ Fant mulig årsresultat ${parsedValue} på samme linje som "resultat" (linje ${i + 1}) for ${year}`);
+          return parsedValue;
+        }
+      }
+      
+      // Hvis ikke, prøv neste linje (ikke forrige)
+      if (i + 1 < lines.length) {
+        const nextLineMatch = lines[i + 1].match(/([-]?\d{1,3}(?:\s?\d{3})*(?:\s?\d{3})*)/);
+        if (nextLineMatch && nextLineMatch[1]) {
+          let cleanedValue = nextLineMatch[1].replace(/\s+/g, '').replace(/\./g, '').replace(/,/g, '');
+          const parsedValue = parseInt(cleanedValue, 10);
+          if (!isNaN(parsedValue) && Math.abs(parsedValue) > 100) {
+            console.log(`[${orgnr}] ✅ Fant mulig årsresultat ${parsedValue} på linje etter "resultat" (linje ${i + 2}) for ${year}`);
+            return parsedValue;
           }
         }
       }

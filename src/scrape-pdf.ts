@@ -937,56 +937,62 @@ async function performOCR(pdfPath: string, orgnr: string, year: number): Promise
       return null;
     }
     
-    // Konverter første siden av PDF til bilde ved å bruke Ghostscript direkte
-    const imagePath = path.join(PDF_TEMP_DIR, `${orgnr}_${year}.1.png`);
-    
-    debugLog(`[${orgnr}] Konverterer PDF side 1 til bilde ved å bruke Ghostscript...`);
-    debugLog(`[${orgnr}] Output bilde: ${imagePath}`);
-    
+    // Først, finn ut hvor mange sider PDF-en har
+    let totalPages = 1;
     try {
-      // Bruk Ghostscript direkte: gs -dNOPAUSE -dBATCH -sDEVICE=png16m -r300 -dFirstPage=1 -dLastPage=1 -sOutputFile=output.png input.pdf
-      const gsCommand = `gs -dNOPAUSE -dBATCH -sDEVICE=png16m -r300 -dFirstPage=1 -dLastPage=1 -sOutputFile="${imagePath}" "${pdfPath}"`;
-      debugLog(`[${orgnr}] Kjører kommando: ${gsCommand}`);
+      const pdfData = fs.readFileSync(pdfPath);
+      const pdfDoc = await pdf(pdfData);
+      totalPages = pdfDoc.numpages || 1;
+      debugLog(`[${orgnr}] PDF har ${totalPages} sider`);
+    } catch (pageError) {
+      debugLog(`[${orgnr}] ⚠️ Kunne ikke lese antall sider, antar 1 side: ${(pageError as Error).message}`);
+    }
+    
+    // Konverter flere sider (minst første 3, eller alle hvis færre enn 3)
+    const pagesToConvert = Math.min(totalPages, 5); // Konverter opptil 5 sider
+    debugLog(`[${orgnr}] Konverterer ${pagesToConvert} sider av PDF til bilder...`);
+    
+    const imagePaths: string[] = [];
+    
+    for (let pageNum = 1; pageNum <= pagesToConvert; pageNum++) {
+      const imagePath = path.join(PDF_TEMP_DIR, `${orgnr}_${year}.${pageNum}.png`);
+      imagePaths.push(imagePath);
       
-      const { stdout, stderr } = await execAsync(gsCommand, {
-        maxBuffer: 10 * 1024 * 1024, // 10MB buffer
-        timeout: 60000, // 60 sekunder timeout
-      });
-      
-      if (stdout) {
-        debugLog(`[${orgnr}] Ghostscript stdout: ${stdout}`);
+      try {
+        // Bruk Ghostscript direkte: gs -dNOPAUSE -dBATCH -sDEVICE=png16m -r300 -dFirstPage=X -dLastPage=X -sOutputFile=output.png input.pdf
+        const gsCommand = `gs -dNOPAUSE -dBATCH -sDEVICE=png16m -r300 -dFirstPage=${pageNum} -dLastPage=${pageNum} -sOutputFile="${imagePath}" "${pdfPath}"`;
+        debugLog(`[${orgnr}] Konverterer side ${pageNum}/${totalPages}...`);
+        
+        const { stdout, stderr } = await execAsync(gsCommand, {
+          maxBuffer: 10 * 1024 * 1024, // 10MB buffer
+          timeout: 60000, // 60 sekunder timeout
+        });
+        
+        if (stderr && !stderr.includes('Processing pages')) {
+          debugLog(`[${orgnr}] Ghostscript stderr for side ${pageNum}: ${stderr.substring(0, 200)}`);
+        }
+        
+        if (!fs.existsSync(imagePath)) {
+          debugLog(`[${orgnr}] ⚠️ Bilde-fil for side ${pageNum} ble ikke opprettet: ${imagePath}`);
+          continue;
+        }
+        
+        debugLog(`[${orgnr}] Side ${pageNum} konvertert til bilde: ${imagePath}`);
+      } catch (convertError: any) {
+        debugLog(`[${orgnr}] ❌ Feil ved konvertering av side ${pageNum}: ${convertError.message}`);
+        continue;
       }
-      if (stderr) {
-        debugLog(`[${orgnr}] Ghostscript stderr: ${stderr}`);
-      }
-      
-      debugLog(`[${orgnr}] PDF konvertert til bilde: ${imagePath}`);
-    } catch (convertError: any) {
-      debugLog(`[${orgnr}] ❌ Feil ved konvertering av PDF til bilde: ${convertError.message}`);
-      if (convertError.stderr) {
-        debugLog(`[${orgnr}] Ghostscript stderr: ${convertError.stderr}`);
-      }
-      if (convertError.stdout) {
-        debugLog(`[${orgnr}] Ghostscript stdout: ${convertError.stdout}`);
-      }
-      debugLog(`[${orgnr}] Error stack: ${convertError.stack}`);
-      debugLog(`[${orgnr}] Dette kan tyde på at Ghostscript ikke er installert. Installer med: sudo dnf install -y ghostscript`);
+    }
+    
+    if (imagePaths.length === 0) {
+      debugLog(`[${orgnr}] ⚠️ Ingen bilder ble konvertert`);
       return null;
     }
     
-    debugLog(`[${orgnr}] Sjekker om bilde-fil eksisterer: ${imagePath}`);
-    if (!fs.existsSync(imagePath)) {
-      debugLog(`[${orgnr}] ⚠️ Bilde-fil eksisterer ikke: ${imagePath}`);
-      // Prøv å finne filer i temp-mappen
-      const filesInTemp = fs.readdirSync(PDF_TEMP_DIR);
-      debugLog(`[${orgnr}] Filer i temp-mappen: ${filesInTemp.join(', ')}`);
-      return null;
-    }
+    debugLog(`[${orgnr}] Konverterte ${imagePaths.length} sider til bilder`);
     
-    debugLog(`[${orgnr}] PDF konvertert til bilde: ${imagePath}`);
-    
-    // Utfør OCR på bildet med norsk språk
-    debugLog(`[${orgnr}] Starter Tesseract OCR på bilde: ${imagePath}`);
+    // Utfør OCR på alle bildene og kombiner teksten
+    debugLog(`[${orgnr}] Starter Tesseract OCR på ${imagePaths.length} bilder...`);
     
     let worker;
     try {
@@ -1008,27 +1014,50 @@ async function performOCR(pdfPath: string, orgnr: string, year: number): Promise
       debugLog(`[${orgnr}] ❌ Feil ved opprettelse av Tesseract worker: ${(workerError as Error).message}`);
       debugLog(`[${orgnr}] Error stack: ${(workerError as Error).stack}`);
       debugLog(`[${orgnr}] Dette kan tyde på at tesseract.js ikke kan laste ned sin binary. Prøv å installere tesseract manuelt eller sjekk internett-tilkobling.`);
-      return null;
-    }
-    
-    let ocrResult;
-    try {
-      debugLog(`[${orgnr}] Starter OCR-recognition på bilde...`);
-      ocrResult = await worker.recognize(imagePath);
-      debugLog(`[${orgnr}] OCR-recognition fullført`);
-    } catch (recognizeError) {
-      debugLog(`[${orgnr}] ❌ Feil ved OCR-recognition: ${(recognizeError as Error).message}`);
-      debugLog(`[${orgnr}] Error stack: ${(recognizeError as Error).stack}`);
-      try {
-        await worker.terminate();
-      } catch (e) {
-        // Ignorer feil ved terminering
+      // Rydd opp bilder
+      for (const imgPath of imagePaths) {
+        if (fs.existsSync(imgPath)) {
+          try {
+            fs.unlinkSync(imgPath);
+          } catch (e) {
+            // Ignorer feil ved sletting
+          }
+        }
       }
       return null;
     }
     
-    const text = ocrResult.data.text;
-    debugLog(`[${orgnr}] OCR ekstraherte ${text.length} tegn`);
+    // Utfør OCR på alle bildene
+    const allTexts: string[] = [];
+    
+    for (let i = 0; i < imagePaths.length; i++) {
+      const imagePath = imagePaths[i];
+      if (!fs.existsSync(imagePath)) {
+        continue;
+      }
+      
+      try {
+        debugLog(`[${orgnr}] Starter OCR-recognition på bilde ${i + 1}/${imagePaths.length}...`);
+        const ocrResult = await worker.recognize(imagePath);
+        const text = ocrResult.data.text;
+        debugLog(`[${orgnr}] Side ${i + 1} OCR ekstraherte ${text.length} tegn`);
+        allTexts.push(text);
+      } catch (recognizeError) {
+        debugLog(`[${orgnr}] ❌ Feil ved OCR-recognition på side ${i + 1}: ${(recognizeError as Error).message}`);
+        continue;
+      }
+    }
+    
+    try {
+      await worker.terminate();
+      debugLog(`[${orgnr}] Tesseract worker terminert`);
+    } catch (e) {
+      debugLog(`[${orgnr}] ⚠️ Feil ved terminering av worker: ${(e as Error).message}`);
+    }
+    
+    // Kombiner all tekst
+    const text = allTexts.join('\n\n');
+    debugLog(`[${orgnr}] OCR ekstraherte totalt ${text.length} tegn fra ${allTexts.length} sider`);
     
     // Log sample av OCR-teksten for debugging
     if (text && text.length > 0) {
@@ -1053,13 +1082,15 @@ async function performOCR(pdfPath: string, orgnr: string, year: number): Promise
       debugLog(`[${orgnr}] ⚠️ Feil ved terminering av worker: ${(terminateError as Error).message}`);
     }
     
-    // Rydd opp bilde-fil
-    if (fs.existsSync(imagePath)) {
-      try {
-        fs.unlinkSync(imagePath);
-        debugLog(`[${orgnr}] Bilde-fil slettet: ${imagePath}`);
-      } catch (e) {
-        debugLog(`[${orgnr}] ⚠️ Feil ved sletting av bilde-fil: ${(e as Error).message}`);
+    // Rydd opp bilde-filer
+    for (const imgPath of imagePaths) {
+      if (fs.existsSync(imgPath)) {
+        try {
+          fs.unlinkSync(imgPath);
+          debugLog(`[${orgnr}] Bilde-fil slettet: ${imgPath}`);
+        } catch (e) {
+          debugLog(`[${orgnr}] ⚠️ Feil ved sletting av bilde-fil: ${(e as Error).message}`);
+        }
       }
     }
     

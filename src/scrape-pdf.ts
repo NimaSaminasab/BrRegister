@@ -378,9 +378,9 @@ async function parsePdfAndExtractAarsresultat(
             const ocrText = await performOCR(tempPdfPath, orgnr, year);
             console.log(`[${orgnr}] performOCR returnerte: ${ocrText ? `${ocrText.length} tegn` : 'null'}`);
             
-            if (ocrText && ocrText.length > 100) {
+            if (ocrText && ocrText.length > 50) {
               console.log(`[${orgnr}] OCR ekstraherte ${ocrText.length} tegn fra PDF for ${year}`);
-              console.log(`[${orgnr}] OCR-tekst sample (første 500 tegn): ${ocrText.substring(0, 500)}`);
+              console.log(`[${orgnr}] OCR-tekst sample (første 1000 tegn): ${ocrText.substring(0, 1000)}`);
               
               const aarsresultat = extractAarsresultatFromPdfText(ocrText, orgnr, year);
               const salgsinntekt = extractSalgsinntektFromPdfText(ocrText, orgnr, year);
@@ -463,9 +463,12 @@ async function parsePdfAndExtractAarsresultat(
                 }
               }
             } else {
-              console.log(`[${orgnr}] OCR ekstraherte lite tekst (${ocrText?.length || 0} tegn)`);
+              console.log(`[${orgnr}] ⚠️ OCR ekstraherte lite tekst (${ocrText?.length || 0} tegn)`);
               if (ocrText && ocrText.length > 0) {
-                console.log(`[${orgnr}] OCR-tekst (første 200 tegn): ${ocrText.substring(0, 200)}`);
+                console.log(`[${orgnr}] OCR-tekst (første 500 tegn): ${ocrText.substring(0, 500)}`);
+                console.log(`[${orgnr}] OCR-tekst (hele): "${ocrText}"`);
+              } else {
+                console.log(`[${orgnr}] ⚠️ OCR returnerte null eller tom tekst`);
               }
             }
           } catch (ocrError) {
@@ -978,6 +981,7 @@ async function performOCR(pdfPath: string, orgnr: string, year: number): Promise
     
     let imageResult;
     try {
+      // Prøv første side først, hvis den ikke gir resultat kan vi prøve flere sider
       imageResult = await convert(1, { responseType: 'image' }); // Konverter første side
     } catch (convertError) {
       console.error(`[${orgnr}] Feil ved konvertering av PDF til bilde:`, (convertError as Error).message);
@@ -1037,6 +1041,22 @@ async function performOCR(pdfPath: string, orgnr: string, year: number): Promise
     
     const text = ocrResult.data.text;
     console.log(`[${orgnr}] OCR ekstraherte ${text.length} tegn`);
+    
+    // Log sample av OCR-teksten for debugging
+    if (text && text.length > 0) {
+      console.log(`[${orgnr}] OCR-tekst sample (første 500 tegn): "${text.substring(0, 500)}"`);
+      console.log(`[${orgnr}] OCR-tekst inneholder "sum": ${text.toLowerCase().includes('sum')}`);
+      console.log(`[${orgnr}] OCR-tekst inneholder "inntekter": ${text.toLowerCase().includes('inntekter')}`);
+      console.log(`[${orgnr}] OCR-tekst inneholder "resultat": ${text.toLowerCase().includes('resultat')}`);
+      
+      // Prøv å finne tall i OCR-teksten
+      const numbers = text.match(/([-]?\d{1,3}(?:\s?\d{3})*(?:\s?\d{3})*)/g);
+      if (numbers && numbers.length > 0) {
+        console.log(`[${orgnr}] Fant ${numbers.length} tall i OCR-teksten. Første 10: ${numbers.slice(0, 10).join(', ')}`);
+      }
+    } else {
+      console.warn(`[${orgnr}] ⚠️ OCR returnerte tom tekst!`);
+    }
     
     try {
       await worker.terminate();

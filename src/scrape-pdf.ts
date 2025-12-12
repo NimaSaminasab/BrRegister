@@ -978,7 +978,14 @@ function extractSumInntekterFromPdfText(pdfText: string, orgnr: string, year: nu
  */
 async function performOCR(pdfPath: string, orgnr: string, year: number): Promise<string | null> {
   try {
-    console.log(`[${orgnr}] Starter OCR på PDF for ${year}...`);
+    debugLog(`[${orgnr}] Starter OCR på PDF for ${year}...`);
+    debugLog(`[${orgnr}] PDF path: ${pdfPath}`);
+    debugLog(`[${orgnr}] PDF eksisterer: ${fs.existsSync(pdfPath)}`);
+    
+    if (!fs.existsSync(pdfPath)) {
+      debugLog(`[${orgnr}] ⚠️ PDF-fil eksisterer ikke: ${pdfPath}`);
+      return null;
+    }
     
     // Konverter første siden av PDF til bilde
     const options = {
@@ -990,113 +997,143 @@ async function performOCR(pdfPath: string, orgnr: string, year: number): Promise
       height: 2000,
     };
     
+    debugLog(`[${orgnr}] Oppretter PDF-konverterer med options: ${JSON.stringify(options)}`);
+    
     let convert;
     try {
       convert = fromPath(pdfPath, options);
+      debugLog(`[${orgnr}] PDF-konverterer opprettet`);
     } catch (convertError) {
-      console.error(`[${orgnr}] Feil ved opprettelse av PDF-konverterer:`, (convertError as Error).message);
-      console.error(`[${orgnr}] Dette kan tyde på at ImageMagick ikke er installert. Installer med: sudo dnf install -y ImageMagick`);
+      debugLog(`[${orgnr}] ❌ Feil ved opprettelse av PDF-konverterer: ${(convertError as Error).message}`);
+      debugLog(`[${orgnr}] Dette kan tyde på at ImageMagick ikke er installert. Installer med: sudo dnf install -y ImageMagick`);
       return null;
     }
     
     let imageResult;
     try {
+      debugLog(`[${orgnr}] Konverterer PDF side 1 til bilde...`);
       // Prøv første side først, hvis den ikke gir resultat kan vi prøve flere sider
       imageResult = await convert(1, { responseType: 'image' }); // Konverter første side
+      debugLog(`[${orgnr}] PDF konvertert til bilde. Type: ${typeof imageResult}`);
     } catch (convertError) {
-      console.error(`[${orgnr}] Feil ved konvertering av PDF til bilde:`, (convertError as Error).message);
-      console.error(`[${orgnr}] Dette kan tyde på at ImageMagick ikke er installert. Installer med: sudo dnf install -y ImageMagick`);
+      debugLog(`[${orgnr}] ❌ Feil ved konvertering av PDF til bilde: ${(convertError as Error).message}`);
+      debugLog(`[${orgnr}] Error stack: ${(convertError as Error).stack}`);
+      debugLog(`[${orgnr}] Dette kan tyde på at ImageMagick ikke er installert. Installer med: sudo dnf install -y ImageMagick`);
       return null;
     }
     
     // pdf2pic returnerer et objekt med path eller buffer
     let imagePath: string;
+    debugLog(`[${orgnr}] Behandler imageResult. Type: ${typeof imageResult}, isObject: ${typeof imageResult === 'object'}, hasPath: ${imageResult && typeof imageResult === 'object' && 'path' in imageResult}`);
+    
     if (typeof imageResult === 'string') {
       imagePath = imageResult;
+      debugLog(`[${orgnr}] imageResult er string: ${imagePath}`);
     } else if (imageResult && typeof imageResult === 'object' && 'path' in imageResult) {
       imagePath = (imageResult as { path: string }).path;
+      debugLog(`[${orgnr}] imageResult har path property: ${imagePath}`);
     } else {
-      console.warn(`[${orgnr}] Kunne ikke konvertere PDF til bilde for ${year}`);
+      debugLog(`[${orgnr}] ⚠️ Kunne ikke konvertere PDF til bilde for ${year}. imageResult type: ${typeof imageResult}`);
+      debugLog(`[${orgnr}] imageResult: ${JSON.stringify(imageResult).substring(0, 200)}`);
       return null;
     }
     
-    if (!imagePath || !fs.existsSync(imagePath)) {
-      console.warn(`[${orgnr}] Bilde-fil eksisterer ikke: ${imagePath}`);
+    if (!imagePath) {
+      debugLog(`[${orgnr}] ⚠️ imagePath er null eller undefined`);
       return null;
     }
     
-    console.log(`[${orgnr}] PDF konvertert til bilde: ${imagePath}`);
+    debugLog(`[${orgnr}] Sjekker om bilde-fil eksisterer: ${imagePath}`);
+    if (!fs.existsSync(imagePath)) {
+      debugLog(`[${orgnr}] ⚠️ Bilde-fil eksisterer ikke: ${imagePath}`);
+      // Prøv å finne filen i temp-mappen
+      const filesInTemp = fs.readdirSync(PDF_TEMP_DIR);
+      debugLog(`[${orgnr}] Filer i temp-mappen: ${filesInTemp.join(', ')}`);
+      return null;
+    }
+    
+    debugLog(`[${orgnr}] PDF konvertert til bilde: ${imagePath}`);
     
     // Utfør OCR på bildet med norsk språk
-    console.log(`[${orgnr}] Starter Tesseract OCR på bilde: ${imagePath}`);
+    debugLog(`[${orgnr}] Starter Tesseract OCR på bilde: ${imagePath}`);
     
     let worker;
     try {
+      debugLog(`[${orgnr}] Oppretter Tesseract worker med norsk språk...`);
       worker = await createWorker('nor', 1, {
         logger: (m: { status: string; progress: number }) => {
           if (m.status === 'recognizing text') {
-            console.log(`[${orgnr}] OCR progress: ${Math.round(m.progress * 100)}%`);
+            debugLog(`[${orgnr}] OCR progress: ${Math.round(m.progress * 100)}%`);
           } else if (m.status) {
-            console.log(`[${orgnr}] OCR status: ${m.status}`);
+            debugLog(`[${orgnr}] OCR status: ${m.status}`);
           }
         },
       });
-      console.log(`[${orgnr}] Tesseract worker opprettet`);
+      debugLog(`[${orgnr}] Tesseract worker opprettet`);
     } catch (workerError) {
-      console.error(`[${orgnr}] Feil ved opprettelse av Tesseract worker:`, (workerError as Error).message);
-      console.error(`[${orgnr}] Dette kan tyde på at tesseract.js ikke kan laste ned sin binary. Prøv å installere tesseract manuelt eller sjekk internett-tilkobling.`);
+      debugLog(`[${orgnr}] ❌ Feil ved opprettelse av Tesseract worker: ${(workerError as Error).message}`);
+      debugLog(`[${orgnr}] Error stack: ${(workerError as Error).stack}`);
+      debugLog(`[${orgnr}] Dette kan tyde på at tesseract.js ikke kan laste ned sin binary. Prøv å installere tesseract manuelt eller sjekk internett-tilkobling.`);
       return null;
     }
     
     let ocrResult;
     try {
-      console.log(`[${orgnr}] Starter OCR-recognition på bilde...`);
+      debugLog(`[${orgnr}] Starter OCR-recognition på bilde...`);
       ocrResult = await worker.recognize(imagePath);
-      console.log(`[${orgnr}] OCR-recognition fullført`);
+      debugLog(`[${orgnr}] OCR-recognition fullført`);
     } catch (recognizeError) {
-      console.error(`[${orgnr}] Feil ved OCR-recognition:`, (recognizeError as Error).message);
-      await worker.terminate();
+      debugLog(`[${orgnr}] ❌ Feil ved OCR-recognition: ${(recognizeError as Error).message}`);
+      debugLog(`[${orgnr}] Error stack: ${(recognizeError as Error).stack}`);
+      try {
+        await worker.terminate();
+      } catch (e) {
+        // Ignorer feil ved terminering
+      }
       return null;
     }
     
     const text = ocrResult.data.text;
-    console.log(`[${orgnr}] OCR ekstraherte ${text.length} tegn`);
+    debugLog(`[${orgnr}] OCR ekstraherte ${text.length} tegn`);
     
     // Log sample av OCR-teksten for debugging
     if (text && text.length > 0) {
-      console.log(`[${orgnr}] OCR-tekst sample (første 500 tegn): "${text.substring(0, 500)}"`);
-      console.log(`[${orgnr}] OCR-tekst inneholder "sum": ${text.toLowerCase().includes('sum')}`);
-      console.log(`[${orgnr}] OCR-tekst inneholder "inntekter": ${text.toLowerCase().includes('inntekter')}`);
-      console.log(`[${orgnr}] OCR-tekst inneholder "resultat": ${text.toLowerCase().includes('resultat')}`);
+      debugLog(`[${orgnr}] OCR-tekst sample (første 500 tegn): "${text.substring(0, 500)}"`);
+      debugLog(`[${orgnr}] OCR-tekst inneholder "sum": ${text.toLowerCase().includes('sum')}`);
+      debugLog(`[${orgnr}] OCR-tekst inneholder "inntekter": ${text.toLowerCase().includes('inntekter')}`);
+      debugLog(`[${orgnr}] OCR-tekst inneholder "resultat": ${text.toLowerCase().includes('resultat')}`);
       
       // Prøv å finne tall i OCR-teksten
       const numbers = text.match(/([-]?\d{1,3}(?:\s?\d{3})*(?:\s?\d{3})*)/g);
       if (numbers && numbers.length > 0) {
-        console.log(`[${orgnr}] Fant ${numbers.length} tall i OCR-teksten. Første 10: ${numbers.slice(0, 10).join(', ')}`);
+        debugLog(`[${orgnr}] Fant ${numbers.length} tall i OCR-teksten. Første 10: ${numbers.slice(0, 10).join(', ')}`);
       }
     } else {
-      console.warn(`[${orgnr}] ⚠️ OCR returnerte tom tekst!`);
+      debugLog(`[${orgnr}] ⚠️ OCR returnerte tom tekst!`);
     }
     
     try {
       await worker.terminate();
+      debugLog(`[${orgnr}] Tesseract worker terminert`);
     } catch (terminateError) {
-      console.warn(`[${orgnr}] Feil ved terminering av worker:`, (terminateError as Error).message);
+      debugLog(`[${orgnr}] ⚠️ Feil ved terminering av worker: ${(terminateError as Error).message}`);
     }
     
     // Rydd opp bilde-fil
     if (fs.existsSync(imagePath)) {
       try {
         fs.unlinkSync(imagePath);
+        debugLog(`[${orgnr}] Bilde-fil slettet: ${imagePath}`);
       } catch (e) {
-        // Ignorer feil ved sletting
+        debugLog(`[${orgnr}] ⚠️ Feil ved sletting av bilde-fil: ${(e as Error).message}`);
       }
     }
     
-    console.log(`[${orgnr}] OCR fullført. Ekstraherte ${text.length} tegn fra PDF for ${year}`);
+    debugLog(`[${orgnr}] OCR fullført. Ekstraherte ${text.length} tegn fra PDF for ${year}`);
     return text;
   } catch (error) {
-    console.error(`[${orgnr}] Feil ved OCR for ${year}:`, (error as Error).message);
+    debugLog(`[${orgnr}] ❌ Feil ved OCR for ${year}: ${(error as Error).message}`);
+    debugLog(`[${orgnr}] Error stack: ${(error as Error).stack}`);
     return null;
   }
 }

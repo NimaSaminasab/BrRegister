@@ -9,6 +9,26 @@ import { createPostgresClient, getPostgresEnvConfig } from './postgres';
 // Temp-mappe for PDF-filer
 const PDF_TEMP_DIR = path.join(__dirname, '../temp_pdfs');
 
+// Log-fil for debugging
+const LOG_FILE = path.join(__dirname, '../../ocr-debug.log');
+
+// Hjelpefunksjon for å logge til både console og fil
+function debugLog(message: string) {
+  const timestamp = new Date().toISOString();
+  const logMessage = `[${timestamp}] ${message}\n`;
+  
+  // Log til console
+  console.log(message);
+  process.stdout.write(logMessage);
+  
+  // Log til fil (async, ikke blokker)
+  fs.appendFile(LOG_FILE, logMessage, (err) => {
+    if (err) {
+      // Ignorer feil ved logging til fil
+    }
+  });
+}
+
 // Opprett temp-mappe hvis den ikke eksisterer
 if (!fs.existsSync(PDF_TEMP_DIR)) {
   fs.mkdirSync(PDF_TEMP_DIR, { recursive: true });
@@ -374,23 +394,23 @@ async function parsePdfAndExtractAarsresultat(
           
           // Prøv OCR på første siden av PDF-en
           try {
-            console.log(`[${orgnr}] Kaller performOCR for ${year}...`);
+            debugLog(`[${orgnr}] Kaller performOCR for ${year}...`);
             const ocrText = await performOCR(tempPdfPath, orgnr, year);
-            console.log(`[${orgnr}] performOCR returnerte: ${ocrText ? `${ocrText.length} tegn` : 'null'}`);
+            debugLog(`[${orgnr}] performOCR returnerte: ${ocrText ? `${ocrText.length} tegn` : 'null'}`);
             
             if (ocrText && ocrText.length > 50) {
-              console.log(`[${orgnr}] OCR ekstraherte ${ocrText.length} tegn fra PDF for ${year}`);
-              console.log(`[${orgnr}] OCR-tekst sample (første 1000 tegn): ${ocrText.substring(0, 1000)}`);
+              debugLog(`[${orgnr}] OCR ekstraherte ${ocrText.length} tegn fra PDF for ${year}`);
+              debugLog(`[${orgnr}] OCR-tekst sample (første 1000 tegn): ${ocrText.substring(0, 1000)}`);
               
               const aarsresultat = extractAarsresultatFromPdfText(ocrText, orgnr, year);
               const salgsinntekt = extractSalgsinntektFromPdfText(ocrText, orgnr, year);
               const sumInntekter = extractSumInntekterFromPdfText(ocrText, orgnr, year);
               
               // Log hva OCR faktisk ekstraherte for debugging
-              console.log(`[${orgnr}] OCR-resultat for ${year}:`);
-              console.log(`[${orgnr}]   - Årsresultat: ${aarsresultat !== null ? aarsresultat : 'ikke funnet'}`);
-              console.log(`[${orgnr}]   - Salgsinntekt: ${salgsinntekt !== null ? salgsinntekt : 'ikke funnet'}`);
-              console.log(`[${orgnr}]   - Sum inntekter: ${sumInntekter !== null ? sumInntekter : 'ikke funnet'}`);
+              debugLog(`[${orgnr}] OCR-resultat for ${year}:`);
+              debugLog(`[${orgnr}]   - Årsresultat: ${aarsresultat !== null ? aarsresultat : 'ikke funnet'}`);
+              debugLog(`[${orgnr}]   - Salgsinntekt: ${salgsinntekt !== null ? salgsinntekt : 'ikke funnet'}`);
+              debugLog(`[${orgnr}]   - Sum inntekter: ${sumInntekter !== null ? sumInntekter : 'ikke funnet'}`);
               console.log(`[${orgnr}]   - OCR-tekst inneholder "resultat": ${ocrText.toLowerCase().includes('resultat')}`);
               console.log(`[${orgnr}]   - OCR-tekst inneholder "årsresultat": ${ocrText.toLowerCase().includes('årsresultat')}`);
               console.log(`[${orgnr}]   - OCR-tekst inneholder "salgsinntekt": ${ocrText.toLowerCase().includes('salgsinntekt')}`);

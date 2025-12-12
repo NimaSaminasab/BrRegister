@@ -990,39 +990,40 @@ async function performOCR(pdfPath: string, orgnr: string, year: number): Promise
       return null;
     }
     
-    // Konverter første siden av PDF til bilde ved å bruke ImageMagick direkte
+    // Konverter første siden av PDF til bilde ved å bruke Ghostscript direkte
     const imagePath = path.join(PDF_TEMP_DIR, `${orgnr}_${year}.1.png`);
     
-    debugLog(`[${orgnr}] Konverterer PDF side 1 til bilde ved å bruke ImageMagick convert...`);
+    debugLog(`[${orgnr}] Konverterer PDF side 1 til bilde ved å bruke Ghostscript...`);
     debugLog(`[${orgnr}] Output bilde: ${imagePath}`);
     
     try {
-      // Bruk ImageMagick convert direkte: convert -density 300 PDF[0] -resize 2000x2000 output.png
-      const convertCommand = `convert -density 300 "${pdfPath}[0]" -resize 2000x2000 "${imagePath}"`;
-      debugLog(`[${orgnr}] Kjører kommando: ${convertCommand}`);
+      // Bruk Ghostscript direkte: gs -dNOPAUSE -dBATCH -sDEVICE=png16m -r300 -dFirstPage=1 -dLastPage=1 -sOutputFile=output.png input.pdf
+      const gsCommand = `gs -dNOPAUSE -dBATCH -sDEVICE=png16m -r300 -dFirstPage=1 -dLastPage=1 -sOutputFile="${imagePath}" "${pdfPath}"`;
+      debugLog(`[${orgnr}] Kjører kommando: ${gsCommand}`);
       
-      const { stdout, stderr } = await execAsync(convertCommand, {
+      const { stdout, stderr } = await execAsync(gsCommand, {
         maxBuffer: 10 * 1024 * 1024, // 10MB buffer
+        timeout: 60000, // 60 sekunder timeout
       });
       
       if (stdout) {
-        debugLog(`[${orgnr}] Convert stdout: ${stdout}`);
+        debugLog(`[${orgnr}] Ghostscript stdout: ${stdout}`);
       }
       if (stderr) {
-        debugLog(`[${orgnr}] Convert stderr: ${stderr}`);
+        debugLog(`[${orgnr}] Ghostscript stderr: ${stderr}`);
       }
       
       debugLog(`[${orgnr}] PDF konvertert til bilde: ${imagePath}`);
     } catch (convertError: any) {
       debugLog(`[${orgnr}] ❌ Feil ved konvertering av PDF til bilde: ${convertError.message}`);
       if (convertError.stderr) {
-        debugLog(`[${orgnr}] Convert stderr: ${convertError.stderr}`);
+        debugLog(`[${orgnr}] Ghostscript stderr: ${convertError.stderr}`);
       }
       if (convertError.stdout) {
-        debugLog(`[${orgnr}] Convert stdout: ${convertError.stdout}`);
+        debugLog(`[${orgnr}] Ghostscript stdout: ${convertError.stdout}`);
       }
       debugLog(`[${orgnr}] Error stack: ${convertError.stack}`);
-      debugLog(`[${orgnr}] Dette kan tyde på at ImageMagick ikke er installert eller mangler PDF-delegate. Sjekk: convert -list delegate | grep pdf`);
+      debugLog(`[${orgnr}] Dette kan tyde på at Ghostscript ikke er installert. Installer med: sudo dnf install -y ghostscript`);
       return null;
     }
     

@@ -988,6 +988,7 @@ async function performOCR(pdfPath: string, orgnr: string, year: number): Promise
     }
     
     // Konverter første siden av PDF til bilde
+    // Bruk ImageMagick i stedet for GraphicsMagick (som krever Ghostscript)
     const options = {
       density: 300,           // Høy oppløsning for bedre OCR
       saveFilename: `${orgnr}_${year}`,
@@ -995,6 +996,7 @@ async function performOCR(pdfPath: string, orgnr: string, year: number): Promise
       format: 'png',
       width: 2000,
       height: 2000,
+      imagemagick: true,      // Bruk ImageMagick i stedet for GraphicsMagick
     };
     
     debugLog(`[${orgnr}] Oppretter PDF-konverterer med options: ${JSON.stringify(options)}`);

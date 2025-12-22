@@ -6,6 +6,7 @@ import pdf from 'pdf-parse';
 import axios from 'axios';
 import { createWorker } from 'tesseract.js';
 import { createPostgresClient, getPostgresEnvConfig } from './postgres';
+import puppeteer from 'puppeteer';
 
 const execAsync = promisify(exec);
 
@@ -159,13 +160,29 @@ export async function scrapePdfForYear(
       }
     }
     
-    // Hvis alle Server Actions feilet, returner feil
+    // Hvis alle Server Actions feilet, prøv Puppeteer som fallback
+    console.log(`[${orgnr}] Alle Server Actions feilet. Prøver Puppeteer for å hente PDF direkte fra nettstedet...`);
+    try {
+      const pdfBuffer = await downloadPdfWithPuppeteer(orgnr, year);
+      if (pdfBuffer && pdfBuffer.length > 1000) {
+        console.log(`[${orgnr}] ✅ Fant PDF via Puppeteer (størrelse: ${pdfBuffer.length} bytes)`);
+        const pdfResult = await parsePdfAndExtractAarsresultat(orgnr, year, pdfBuffer);
+        return {
+          ...pdfResult,
+          success: pdfResult.aarsresultat !== null || pdfResult.salgsinntekt !== null || pdfResult.sumInntekter !== null,
+        };
+      }
+    } catch (puppeteerError) {
+      console.log(`[${orgnr}] Puppeteer feilet: ${(puppeteerError as Error).message}`);
+    }
+    
+    // Hvis alt feilet, returner feil
     return {
       aarsresultat: null,
       salgsinntekt: null,
       sumInntekter: null,
       success: false,
-      message: `Kunne ikke hente PDF for ${year}. Alle Server Actions returnerte 404 eller feilet.`,
+      message: `Kunne ikke hente PDF for ${year}. Alle metoder (API, Server Actions, Puppeteer) feilet.`,
     };
   } catch (error) {
     console.error(`[${orgnr}] Feil ved scraping av PDF for ${year}:`, (error as Error).message);
@@ -1100,6 +1117,133 @@ async function performOCR(pdfPath: string, orgnr: string, year: number): Promise
     debugLog(`[${orgnr}] ❌ Feil ved OCR for ${year}: ${(error as Error).message}`);
     debugLog(`[${orgnr}] Error stack: ${(error as Error).stack}`);
     return null;
+  }
+}
+
+/**
+ * Henter PDF ved hjelp av Puppeteer (fallback når Server Actions feiler)
+ */
+async function downloadPdfWithPuppeteer(orgnr: string, year: number): Promise<Buffer | null> {
+  let browser;
+  try {
+    console.log(`[${orgnr}] Starter Puppeteer for å hente PDF for ${year}...`);
+    
+    browser = await puppeteer.launch({
+      headless: true,
+      args: ['--no-sandbox', '--disable-setuid-sandbox', '--disable-dev-shm-usage'],
+    });
+    
+    const page = await browser.newPage();
+    const baseUrl = `https://virksomhet.brreg.no/nb/oppslag/enheter/${orgnr}`;
+    
+    console.log(`[${orgnr}] Navigerer til ${baseUrl}...`);
+    await page.goto(baseUrl, { waitUntil: 'networkidle2', timeout: 30000 });
+    
+    // Vent på at siden er lastet
+    await page.waitForTimeout(2000);
+    
+    // Prøv å finne og klikke på link/knapp for å laste ned årsregnskap for det spesifikke året
+    // Dette kan variere basert på hvordan nettstedet er strukturert
+    console.log(`[${orgnr}] Søker etter PDF-nedlastingslink for ${year}...`);
+    
+    // Prøv flere strategier for å finne PDF-lenken
+    const pdfUrl = await page.evaluate((year: number) => {
+      // Strategi 1: Søk etter lenker som inneholder årstallet
+      const links = Array.from(document.querySelectorAll('a[href*=".pdf"], a[href*="regnskap"], a[download]'));
+      for (const link of links) {
+        const href = (link as HTMLAnchorElement).href;
+        const text = link.textContent || '';
+        if (href.includes(year.toString()) || text.includes(year.toString())) {
+          return href;
+        }
+      }
+      
+      // Strategi 2: Søk etter knapper som kan trigge nedlasting
+      const buttons = Array.from(document.querySelectorAll('button, [role="button"]'));
+      for (const button of buttons) {
+        const text = button.textContent || '';
+        if (text.toLowerCase().includes('regnskap') || text.toLowerCase().includes('pdf') || text.includes(year.toString())) {
+          // Klikk på knappen og vent på nedlasting
+          (button as HTMLElement).click();
+          return null; // Vi må håndtere nedlasting i stedet
+        }
+      }
+      
+      return null;
+    }, year);
+    
+    if (pdfUrl) {
+      console.log(`[${orgnr}] Fant PDF-URL: ${pdfUrl}`);
+      // Last ned PDF direkte
+      const response = await axios.get(pdfUrl, {
+        responseType: 'arraybuffer',
+        timeout: 60000,
+      });
+      
+      if (response.data && (response.data as ArrayBuffer).byteLength > 1000) {
+        return Buffer.from(response.data);
+      }
+    } else {
+      // Prøv å finne PDF via nettverksrequests
+      console.log(`[${orgnr}] Ingen direkte PDF-URL funnet. Prøver å fange opp PDF-nedlasting...`);
+      
+      // Sett opp en listener for PDF-nedlasting
+      const pdfPromise = new Promise<Buffer | null>((resolve) => {
+        page.on('response', async (response: any) => {
+          const contentType = response.headers()['content-type'] || '';
+          const url = response.url();
+          
+          if (contentType.includes('application/pdf') || url.includes('.pdf') || url.includes('regnskap')) {
+            console.log(`[${orgnr}] Fant PDF-response: ${url}`);
+            try {
+              const buffer = await response.buffer();
+              if (buffer && buffer.length > 1000) {
+                resolve(buffer);
+              }
+            } catch (e) {
+              // Ignorer feil
+            }
+          }
+        });
+        
+        // Timeout etter 10 sekunder
+        setTimeout(() => resolve(null), 10000);
+      });
+      
+      // Prøv å klikke på alle mulige lenker/knapper som kan trigge nedlasting
+      await page.evaluate((year: number) => {
+        const clickableElements = Array.from(document.querySelectorAll('a, button, [role="button"], [onclick]'));
+        for (const el of clickableElements) {
+          const text = el.textContent || '';
+          const href = (el as HTMLAnchorElement).href || '';
+          if (text.includes(year.toString()) || href.includes(year.toString()) || 
+              text.toLowerCase().includes('regnskap') || text.toLowerCase().includes('pdf')) {
+            (el as HTMLElement).click();
+            break;
+          }
+        }
+      }, year);
+      
+      // Vent på PDF-nedlasting
+      const pdfBuffer = await pdfPromise;
+      if (pdfBuffer) {
+        return pdfBuffer;
+      }
+    }
+    
+    console.log(`[${orgnr}] ⚠️ Kunne ikke hente PDF via Puppeteer for ${year}`);
+    return null;
+  } catch (error) {
+    console.error(`[${orgnr}] Feil ved Puppeteer-henting av PDF for ${year}:`, (error as Error).message);
+    return null;
+  } finally {
+    if (browser) {
+      try {
+        await browser.close();
+      } catch (e) {
+        // Ignorer feil ved lukking
+      }
+    }
   }
 }
 

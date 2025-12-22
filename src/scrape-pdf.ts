@@ -1147,96 +1147,135 @@ async function downloadPdfWithPuppeteer(orgnr: string, year: number): Promise<Bu
     console.log(`[${orgnr}] Navigerer til ${baseUrl}...`);
     await page.goto(baseUrl, { waitUntil: 'networkidle2', timeout: 30000 });
     
-    // Vent på at siden er lastet (bruk Promise i stedet for waitForTimeout)
-    await new Promise(resolve => setTimeout(resolve, 2000));
+    // Vent på at siden er lastet
+    await new Promise(resolve => setTimeout(resolve, 3000));
     
-    // Prøv å finne og klikke på link/knapp for å laste ned årsregnskap for det spesifikke året
-    // Dette kan variere basert på hvordan nettstedet er strukturert
-    console.log(`[${orgnr}] Søker etter PDF-nedlastingslink for ${year}...`);
-    
-    // Prøv flere strategier for å finne PDF-lenken
-    const pdfUrl = await page.evaluate((year: number) => {
-      // Strategi 1: Søk etter lenker som inneholder årstallet
-      const links = Array.from(document.querySelectorAll('a[href*=".pdf"], a[href*="regnskap"], a[download]'));
-      for (const link of links) {
-        const href = (link as HTMLAnchorElement).href;
-        const text = link.textContent || '';
-        if (href.includes(year.toString()) || text.includes(year.toString())) {
-          return href;
-        }
-      }
-      
-      // Strategi 2: Søk etter knapper som kan trigge nedlasting
-      const buttons = Array.from(document.querySelectorAll('button, [role="button"]'));
-      for (const button of buttons) {
-        const text = button.textContent || '';
-        if (text.toLowerCase().includes('regnskap') || text.toLowerCase().includes('pdf') || text.includes(year.toString())) {
-          // Klikk på knappen og vent på nedlasting
-          (button as HTMLElement).click();
-          return null; // Vi må håndtere nedlasting i stedet
-        }
-      }
-      
-      return null;
-    }, year);
-    
-    if (pdfUrl) {
-      console.log(`[${orgnr}] Fant PDF-URL: ${pdfUrl}`);
-      // Last ned PDF direkte
-      const response = await axios.get(pdfUrl, {
-        responseType: 'arraybuffer',
-        timeout: 60000,
-      });
-      
-      if (response.data && (response.data as ArrayBuffer).byteLength > 1000) {
-        return Buffer.from(response.data);
-      }
-    } else {
-      // Prøv å finne PDF via nettverksrequests
-      console.log(`[${orgnr}] Ingen direkte PDF-URL funnet. Prøver å fange opp PDF-nedlasting...`);
-      
-      // Sett opp en listener for PDF-nedlasting
-      const pdfPromise = new Promise<Buffer | null>((resolve) => {
-        page.on('response', async (response: any) => {
-          const contentType = response.headers()['content-type'] || '';
+    // Sett opp en listener for PDF-nedlasting FØR vi klikker
+    let pdfBuffer: Buffer | null = null;
+    const pdfPromise = new Promise<Buffer | null>((resolve) => {
+      const responseHandler = async (response: any) => {
+        try {
+          const contentType = (response.headers()['content-type'] || '').toLowerCase();
           const url = response.url();
           
-          if (contentType.includes('application/pdf') || url.includes('.pdf') || url.includes('regnskap')) {
-            console.log(`[${orgnr}] Fant PDF-response: ${url}`);
+          // Kun fang opp faktiske PDF-filer (ikke HTML)
+          if (contentType.includes('application/pdf') || 
+              (url.includes('.pdf') && !url.includes('.html') && !contentType.includes('text/html'))) {
+            console.log(`[${orgnr}] Fant PDF-response: ${url} (content-type: ${contentType})`);
             try {
               const buffer = await response.buffer();
+              // Sjekk at det faktisk er en PDF ved å se etter PDF-header
               if (buffer && buffer.length > 1000) {
-                resolve(buffer);
+                const header = buffer.toString('utf-8', 0, 4);
+                if (header === '%PDF') {
+                  console.log(`[${orgnr}] ✅ Bekreftet PDF-header i respons (størrelse: ${buffer.length} bytes)`);
+                  resolve(buffer);
+                  page.off('response', responseHandler);
+                } else {
+                  console.log(`[${orgnr}] ⚠️ Respons har ikke PDF-header (header: ${header})`);
+                }
               }
             } catch (e) {
-              // Ignorer feil
+              console.log(`[${orgnr}] ⚠️ Feil ved lesing av PDF-buffer: ${(e as Error).message}`);
             }
           }
-        });
+        } catch (e) {
+          // Ignorer feil
+        }
+      };
+      
+      page.on('response', responseHandler);
+      
+      // Timeout etter 15 sekunder
+      setTimeout(() => {
+        page.off('response', responseHandler);
+        resolve(null);
+      }, 15000);
+    });
+    
+    console.log(`[${orgnr}] Søker etter PDF-nedlastingslink/knapp for ${year}...`);
+    
+    // Prøv å finne og klikke på riktig element
+    const clicked = await page.evaluate((year: number) => {
+      // Strategi 1: Søk etter lenker med årstall i teksten eller href
+      const links = Array.from(document.querySelectorAll('a'));
+      for (const link of links) {
+        const href = (link as HTMLAnchorElement).href || '';
+        const text = (link.textContent || '').trim();
+        const title = (link.getAttribute('title') || '').trim();
         
-        // Timeout etter 10 sekunder
-        setTimeout(() => resolve(null), 10000);
+        // Sjekk om lenken er relatert til årsregnskap og årstallet
+        if ((text.includes(year.toString()) || href.includes(year.toString()) || title.includes(year.toString())) &&
+            (text.toLowerCase().includes('regnskap') || href.includes('regnskap') || 
+             text.toLowerCase().includes('pdf') || href.includes('.pdf') ||
+             text.toLowerCase().includes('last') || text.toLowerCase().includes('ned'))) {
+          console.log(`Fant lenke: ${text} - ${href}`);
+          (link as HTMLElement).click();
+          return true;
+        }
+      }
+      
+      // Strategi 2: Søk etter knapper
+      const buttons = Array.from(document.querySelectorAll('button, [role="button"], [type="button"]'));
+      for (const button of buttons) {
+        const text = (button.textContent || '').trim();
+        const ariaLabel = (button.getAttribute('aria-label') || '').trim();
+        
+        if ((text.includes(year.toString()) || ariaLabel.includes(year.toString())) &&
+            (text.toLowerCase().includes('regnskap') || text.toLowerCase().includes('pdf') ||
+             text.toLowerCase().includes('last') || text.toLowerCase().includes('ned'))) {
+          console.log(`Fant knapp: ${text}`);
+          (button as HTMLElement).click();
+          return true;
+        }
+      }
+      
+      // Strategi 3: Søk etter alle klikkbare elementer med årstall
+      const allClickable = Array.from(document.querySelectorAll('a, button, [onclick], [role="button"], [data-testid*="download"], [data-testid*="pdf"]'));
+      for (const el of allClickable) {
+        const text = (el.textContent || '').trim();
+        const href = (el as HTMLAnchorElement).href || '';
+        if (text.includes(year.toString()) || href.includes(year.toString())) {
+          console.log(`Fant klikkbart element: ${text}`);
+          (el as HTMLElement).click();
+          return true;
+        }
+      }
+      
+      return false;
+    }, year);
+    
+    if (clicked) {
+      console.log(`[${orgnr}] Klikket på element. Venter på PDF-nedlasting...`);
+      // Vent på PDF-nedlasting
+      pdfBuffer = await pdfPromise;
+    } else {
+      console.log(`[${orgnr}] ⚠️ Fant ingen klikkbar element for ${year}. Prøver å søke i hele DOM-en...`);
+      // Prøv å finne alle lenker som kan være relevante
+      const allLinks = await page.evaluate(() => {
+        const links = Array.from(document.querySelectorAll('a'));
+        return links.map(link => ({
+          text: (link.textContent || '').trim(),
+          href: (link as HTMLAnchorElement).href || '',
+          title: link.getAttribute('title') || ''
+        }));
       });
       
-      // Prøv å klikke på alle mulige lenker/knapper som kan trigge nedlasting
-      await page.evaluate((year: number) => {
-        const clickableElements = Array.from(document.querySelectorAll('a, button, [role="button"], [onclick]'));
-        for (const el of clickableElements) {
-          const text = el.textContent || '';
-          const href = (el as HTMLAnchorElement).href || '';
-          if (text.includes(year.toString()) || href.includes(year.toString()) || 
-              text.toLowerCase().includes('regnskap') || text.toLowerCase().includes('pdf')) {
-            (el as HTMLElement).click();
-            break;
-          }
+      console.log(`[${orgnr}] Fant ${allLinks.length} lenker på siden. Søker etter relevante...`);
+      for (const link of allLinks) {
+        if (link.href.includes('regnskap') || link.href.includes('.pdf') || 
+            link.text.toLowerCase().includes('regnskap') || link.text.toLowerCase().includes('pdf')) {
+          console.log(`[${orgnr}] Prøver lenke: ${link.text} - ${link.href}`);
+          await page.goto(link.href, { waitUntil: 'networkidle2', timeout: 30000 });
+          await new Promise(resolve => setTimeout(resolve, 2000));
+          pdfBuffer = await pdfPromise;
+          if (pdfBuffer) break;
         }
-      }, year);
-      
-      // Vent på PDF-nedlasting
-      const pdfBuffer = await pdfPromise;
-      if (pdfBuffer) {
-        return pdfBuffer;
       }
+    }
+    
+    if (pdfBuffer) {
+      return pdfBuffer;
     }
     
     console.log(`[${orgnr}] ⚠️ Kunne ikke hente PDF via Puppeteer for ${year}`);

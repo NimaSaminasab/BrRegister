@@ -1147,8 +1147,8 @@ async function downloadPdfWithPuppeteer(orgnr: string, year: number): Promise<Bu
     console.log(`[${orgnr}] Navigerer til ${baseUrl}...`);
     await page.goto(baseUrl, { waitUntil: 'networkidle2', timeout: 30000 });
     
-    // Vent på at siden er lastet
-    await page.waitForTimeout(2000);
+    // Vent på at siden er lastet (bruk Promise i stedet for waitForTimeout)
+    await new Promise(resolve => setTimeout(resolve, 2000));
     
     // Prøv å finne og klikke på link/knapp for å laste ned årsregnskap for det spesifikke året
     // Dette kan variere basert på hvordan nettstedet er strukturert

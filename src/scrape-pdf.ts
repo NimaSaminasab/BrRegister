@@ -1130,7 +1130,15 @@ async function downloadPdfWithPuppeteer(orgnr: string, year: number): Promise<Bu
     
     browser = await puppeteer.launch({
       headless: true,
-      args: ['--no-sandbox', '--disable-setuid-sandbox', '--disable-dev-shm-usage'],
+      args: [
+        '--no-sandbox',
+        '--disable-setuid-sandbox',
+        '--disable-dev-shm-usage',
+        '--disable-gpu',
+        '--disable-software-rasterizer',
+      ],
+      // Bruk bundled Chromium som kommer med Puppeteer
+      executablePath: undefined, // La Puppeteer bruke sin egen bundled Chromium
     });
     
     const page = await browser.newPage();
